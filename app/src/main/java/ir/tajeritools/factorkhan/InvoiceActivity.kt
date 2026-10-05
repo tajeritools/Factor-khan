@@ -142,16 +142,16 @@ class InvoiceActivity : AppCompatActivity() {
             setOnClickListener { runOfflineBina() }
         })
 
-        root.addView(actionButton("☁️ حرفه‌ای دست‌خط فارسی (AI آنلاین)").apply {
+        root.addView(actionButton("☁️ OpenAI حرفه‌ای دست‌خط فارسی").apply {
             setOnClickListener { runAiHandwriting() }
         })
 
-        root.addView(actionButton("🔑 تنظیم کلید Gemini API").apply {
-            setOnClickListener { showApiKeyDialog() }
+        root.addView(actionButton("🔐 تنظیم اتصال امن OpenAI").apply {
+            setOnClickListener { showOpenAiSettingsDialog() }
         })
 
         root.addView(TextView(this).apply {
-            text = "سه حالت داری: OCR سبک آفلاین، مدل تخصصی Bina آفلاین برای دست‌خط فارسی، و AI آنلاین برای سخت‌ترین فاکتورها. هر سه نتیجه را با محاسبات فاکتور کنترل می‌کنند."
+            text = "سه حالت داری: OCR سبک آفلاین، مدل تخصصی Bina آفلاین، و OpenAI آنلاین برای سخت‌ترین دست‌خط‌ها. کلید OpenAI داخل APK ذخیره نمی‌شود و درخواست از سرور امن عبور می‌کند."
             gravity = Gravity.RIGHT
             textSize = 14f
             setPadding(0, dp(6), 0, dp(10))
@@ -349,22 +349,32 @@ class InvoiceActivity : AppCompatActivity() {
         }
     }
 
-    private fun showApiKeyDialog() {
-        val engine = GeminiHandwritingEngine(this)
-        val input = EditText(this).apply {
-            hint = "Gemini API Key"
-            setText(engine.getApiKey())
+    private fun showOpenAiSettingsDialog() {
+        val engine = OpenAiProxyEngine(this)
+        val box = verticalRoot()
+
+        val endpoint = EditText(this).apply {
+            hint = "آدرس سرور"
+            setText(engine.getEndpoint())
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+        }
+        val token = EditText(this).apply {
+            hint = "App access token"
+            setText(engine.getAccessToken())
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
         }
 
+        box.addView(endpoint)
+        box.addView(token)
+
         AlertDialog.Builder(this)
-            .setTitle("کلید هوش مصنوعی")
-            .setMessage("برای حالت تخصصی دست‌خط فارسی، کلید Gemini API را وارد کن. کلید فقط روی همین گوشی ذخیره می‌شود.")
-            .setView(input)
+            .setTitle("اتصال امن OpenAI")
+            .setMessage("کلید اصلی OpenAI روی سرور WordPress می‌ماند. اینجا فقط آدرس سرور و توکن جداگانه FactorKhan را وارد کن.")
+            .setView(box)
             .setNegativeButton("انصراف", null)
             .setPositiveButton("ذخیره") { _, _ ->
-                engine.saveApiKey(input.text.toString())
-                toast("کلید ذخیره شد.")
+                engine.saveSettings(endpoint.text.toString(), token.text.toString())
+                toast("تنظیمات اتصال ذخیره شد.")
             }
             .show()
     }
@@ -376,14 +386,14 @@ class InvoiceActivity : AppCompatActivity() {
             return
         }
 
-        val engine = GeminiHandwritingEngine(this)
-        if (engine.getApiKey().isBlank()) {
-            showApiKeyDialog()
+        val engine = OpenAiProxyEngine(this)
+        if (engine.getAccessToken().isBlank()) {
+            showOpenAiSettingsDialog()
             return
         }
 
         scanButton.isEnabled = false
-        resultText.text = "در حال تحلیل تخصصی دست‌خط فارسی..."
+        resultText.text = "در حال تحلیل تخصصی دست‌خط فارسی با OpenAI..."
 
         worker.execute {
             runCatching { engine.analyzeInvoice(file) }
@@ -393,11 +403,13 @@ class InvoiceActivity : AppCompatActivity() {
 
                         rowViews.clear()
                         itemContainer.removeAllViews()
+
                         if (result.items.isNotEmpty()) {
-                            itemHint.text = result.items.size.toString() + " ردیف توسط AI تشخیص داده شد. لطفاً اعداد را کنترل کن."
+                            itemHint.text =
+                                result.items.size.toString() + " ردیف توسط OpenAI تشخیص داده شد. قبل از ذخیره اعداد را کنترل کن."
                             result.items.forEach { addItemRow(it) }
                         } else {
-                            itemHint.text = "AI ردیف قابل اطمینانی پیدا نکرد؛ می‌توانی دستی اضافه کنی."
+                            itemHint.text = "OpenAI ردیف قابل محاسبه‌ای پیدا نکرد؛ می‌توانی دستی اضافه کنی."
                         }
 
                         result.printedTotal?.let { manualTotalInput.setText(money(it)) }
@@ -406,16 +418,26 @@ class InvoiceActivity : AppCompatActivity() {
                         scanButton.text = "🔎 آفلاین: خواندن عکس و استخراج اقلام"
 
                         val analysis = analyze()
+                        val serverTotal = result.serverComputedTotal?.let { money(it) } ?: "—"
+                        val verifiedText = when (result.serverTotalVerified) {
+                            true -> "✓ جمع کل سرور تایید شد"
+                            false -> "⚠ جمع کل سرور با فاکتور نمی‌خواند"
+                            null -> "جمع کل نوشته‌شده برای تایید کافی نبود"
+                        }
+
                         resultText.text = resultText.text.toString() +
-                            "\n\nAI: " + result.confidenceNote +
-                            "\nکنترل نهایی محاسبات: " + analysis.warning
+                            "\n\nOpenAI: " + result.confidenceNote +
+                            "\nمحاسبه سرور: " + serverTotal +
+                            "\n" + verifiedText +
+                            (if (result.serverWarning.isNotBlank()) "\n" + result.serverWarning else "") +
+                            "\nکنترل نهایی برنامه: " + analysis.warning
                     }
                 }
                 .onFailure { e ->
                     runOnUiThread {
                         scanButton.isEnabled = true
                         scanButton.text = "🔎 آفلاین: خواندن عکس و استخراج اقلام"
-                        toast("تحلیل AI انجام نشد: " + (e.message ?: "خطای ناشناخته"))
+                        toast("تحلیل OpenAI انجام نشد: " + (e.message ?: "خطای ناشناخته"))
                     }
                 }
         }
