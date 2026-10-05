@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: factorkhan-invoice-engine
+    runtime: docker
+    repo: https://github.com/tajeritools/Factor-khan
+    branch: main
+    dockerfilePath: ./invoice_engine/Dockerfile
+    dockerContext: ./invoice_engine
+    healthCheckPath: /health
+    autoDeployTrigger: commit
+    envVars:
+      - key: MISTRAL_API_KEY
+        sync: false
+      - key: MISTRAL_OCR_MODEL
+        value: mistral-ocr-latest
