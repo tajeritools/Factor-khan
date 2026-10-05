@@ -18,7 +18,7 @@ git checkout 2661c7c0ef5c613e8f93c6e93b2e052399f0f854
 cd - >/dev/null
 
 python3 -m pip install --upgrade pip
-python3 -m pip install "paddlepaddle==3.3.1" "paddle2onnx==2.1.0" "onnx==1.17.0" pyyaml shapely pyclipper lmdb opencv-python-headless rapidfuzz
+python3 -m pip install "paddlepaddle==3.3.1" "paddle2onnx==2.1.0" "onnx==1.17.0" pyyaml shapely pyclipper lmdb opencv-python-headless rapidfuzz tqdm requests imagesize
 
 PYTHONPATH="$PPOCR:${PYTHONPATH:-}" python3 - <<'PY'
 import os, sys, yaml, paddle
