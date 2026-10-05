@@ -50,24 +50,12 @@ class QuickTotalActivity : AppCompatActivity() {
         }
         root.addView(preview, LinearLayout.LayoutParams(-1, -2))
 
-        val run = actionButton("🧮 استخراج ستون‌ها و محاسبه جمع")
-        run.setOnClickListener { analyze() }
-        root.addView(run)
-
-        root.addView(actionButton("🧠 Mistral OCR / Document AI").apply {
-            setOnClickListener { analyzeWithMistral() }
+        root.addView(actionButton("🧠 تحلیل نهایی فاکتور").apply {
+            setOnClickListener { analyzeWithPython() }
         })
 
-        root.addView(actionButton("🔑 تنظیم Mistral").apply {
-            setOnClickListener { showMistralSettings() }
-        })
-
-        root.addView(actionButton("☁️ تحلیل آنلاین Azure Document Intelligence").apply {
-            setOnClickListener { analyzeWithAzure() }
-        })
-
-        root.addView(actionButton("🔑 تنظیم Azure Document Intelligence").apply {
-            setOnClickListener { showAzureSettings() }
+        root.addView(actionButton("⚙️ تنظیم موتور Python").apply {
+            setOnClickListener { showPythonSettings() }
         })
 
         aiConnectionStatus = TextView(this).apply {
@@ -138,6 +126,87 @@ class QuickTotalActivity : AppCompatActivity() {
                     result.text = e.message ?: "خطای ناشناخته"
                 }
             }
+        }.start()
+    }
+
+    private fun showPythonSettings() {
+        val engine = PythonInvoiceEngine(this)
+        val input = android.widget.EditText(this).apply {
+            hint = "https://your-python-engine.example.com"
+            setText(engine.endpoint())
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_URI
+        }
+
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("تنظیم موتور Python/OpenCV")
+            .setMessage("آدرس HTTPS سرویس FactorKhan Invoice Engine را وارد کن.")
+            .setView(input)
+            .setNegativeButton("انصراف", null)
+            .setPositiveButton("ذخیره و تست") { _, _ ->
+                engine.saveEndpoint(input.text.toString())
+                refreshConnectionStatus()
+                Thread {
+                    val ok = runCatching { engine.testConnection() }.getOrDefault(false)
+                    runOnUiThread {
+                        refreshConnectionStatus()
+                        Toast.makeText(
+                            this,
+                            if (ok) "موتور Python/OpenCV متصل شد." else "اتصال موتور Python تأیید نشد.",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                }.start()
+            }
+            .show()
+    }
+
+    private fun analyzeWithPython() {
+        val file = currentFile
+        if (file == null) {
+            Toast.makeText(this, "اول عکس فاکتور را انتخاب کن.", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val engine = PythonInvoiceEngine(this)
+        if (!engine.configured()) {
+            showPythonSettings()
+            return
+        }
+
+        status.text = "در حال تحلیل نهایی فاکتور..."
+        result.text = ""
+
+        Thread {
+            runCatching { engine.analyze(file) }
+                .onSuccess { a ->
+                    runOnUiThread {
+                        val sb = StringBuilder()
+                        sb.append("جمع محاسبه‌شده برنامه (ریال): ").append(a.formattedTotalIrr).append("\n")
+                        sb.append("معادل تومان: ").append(a.formattedTotalToman).append("\n")
+                        sb.append("تعداد ردیف‌ها: ").append(a.items.size).append("\n\n")
+                        a.items.forEachIndexed { i, item ->
+                            sb.append("ردیف ").append(i + 1).append(": ")
+                            if (item.description.isNotBlank()) sb.append(item.description).append(" | ")
+                            sb.append("تعداد=").append(qtyText(item.quantity))
+                            if (item.unit.isNotBlank()) sb.append(" ").append(item.unit)
+                            sb.append(" | قیمت واحد=").append(money(item.unitPrice))
+                            sb.append(" | حاصل=").append(money(item.rowTotal))
+                            if (item.confidence in 1..54) sb.append(" ⚠")
+                            sb.append("\n")
+                        }
+                        if (a.warning.isNotBlank()) sb.append("\n").append(a.warning)
+                        status.text = "تحلیل نهایی انجام شد."
+                        refreshConnectionStatus()
+                        result.text = sb.toString()
+                    }
+                }
+                .onFailure { e ->
+                    runOnUiThread {
+                        status.text = "تحلیل نهایی انجام نشد."
+                        refreshConnectionStatus()
+                        result.text = e.message ?: "خطای ناشناخته"
+                    }
+                }
         }.start()
     }
 
@@ -312,12 +381,8 @@ class QuickTotalActivity : AppCompatActivity() {
     }
 
     private fun refreshConnectionStatus() {
-        val mistral = MistralDocumentAi(this)
-        val azure = AzureDocumentIntelligence(this)
-        aiConnectionStatus.text = listOf(
-            connectionLabel("Mistral", mistral.configured(), mistral.verified()),
-            connectionLabel("Azure", azure.configured(), azure.verified())
-        ).joinToString("\n")
+        val python = PythonInvoiceEngine(this)
+        aiConnectionStatus.text = connectionLabel("Python/OpenCV", python.configured(), python.verified())
     }
 
     private fun connectionLabel(name: String, configured: Boolean, verified: Boolean): String = when {
