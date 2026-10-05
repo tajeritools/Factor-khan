@@ -37,6 +37,9 @@ jobs:
       - name: Fetch Persian and English OCR models
         run: bash scripts/fetch_tessdata.sh
 
+      - name: Build offline Persian handwriting model
+        run: bash scripts/fetch_bina_onnx.sh
+
       - name: Build debug APK
         run: gradle :app:assembleDebug --stacktrace
 
