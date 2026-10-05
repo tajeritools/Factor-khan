@@ -49,7 +49,8 @@ class ColumnTotalEngine(private val context: Context) {
             val verticals = detectVerticalGridLines(working)
             val horizontals = detectHorizontalGridLines(working)
             val columns = chooseInvoiceColumns(working.width, verticals)
-            val rows = chooseItemRows(working.height, horizontals)
+            val handwritingRows = detectHandwritingRows(working, columns)
+            val rows = if (handwritingRows.size >= 2) handwritingRows else chooseItemRows(working.height, horizontals)
 
             val output = mutableListOf<ColumnInvoiceRow>()
             rows.forEachIndexed { index, yRange ->
@@ -57,10 +58,19 @@ class ColumnTotalEngine(private val context: Context) {
                 val unitCrop = safeCrop(working, columns.unit.first, yRange.first, columns.unit.last - columns.unit.first, yRange.last - yRange.first)
                 val totalCrop = safeCrop(working, columns.total.first, yRange.first, columns.total.last - columns.total.first, yRange.last - yRange.first)
 
+                val physicalEvidence = listOf(
+                    hasHandwrittenInk(qtyCrop),
+                    hasHandwrittenInk(unitCrop),
+                    hasHandwrittenInk(totalCrop)
+                ).count { it }
+
                 val qtyOcr = recognizeNumber(qtyCrop, isQuantity = true)
                 val unitOcr = recognizeNumber(unitCrop, isQuantity = false)
                 val totalOcr = recognizeNumber(totalCrop, isQuantity = false)
                 qtyCrop.recycle(); unitCrop.recycle(); totalCrop.recycle()
+
+                // ردیف خالی جدول یا خط شبکه نباید کالا حساب شود.
+                if (physicalEvidence < 2) return@forEachIndexed
 
                 val q = parseQty(qtyOcr.text)
                 val u = parseMoneyStrict(unitOcr.text)
@@ -95,18 +105,20 @@ class ColumnTotalEngine(private val context: Context) {
                 )
             }
 
-            val accepted = output.filter { it.calculatedTotal != null }
+            val renumbered = output.mapIndexed { idx, row -> row.copy(row = idx + 1) }
+            val accepted = renumbered.filter { it.calculatedTotal != null }
             val grand = accepted.sumOf { it.calculatedTotal ?: 0L }
-            val printed = output.mapNotNull { it.printedTotal }.sum()
+            val printed = renumbered.mapNotNull { it.printedTotal }.sum()
 
             return ColumnTotalResult(
-                rows = output,
+                rows = renumbered,
                 calculatedGrandTotal = grand,
                 printedRowsTotal = printed,
                 acceptedRows = accepted.size,
-                rejectedRows = output.size - accepted.size,
+                rejectedRows = renumbered.size - accepted.size,
                 layoutNote = columns.note + " | " +
-                    if (horizontals.size >= 5) "ردیف‌ها از خطوط جدول تشخیص داده شدند."
+                    if (handwritingRows.size >= 2) "ردیف‌ها از خود دست‌خط داخل ستون‌های عددی تشخیص داده شدند."
+                    else if (horizontals.size >= 5) "ردیف‌ها از خطوط جدول تشخیص داده شدند."
                     else "ردیف‌ها با تقسیم‌بندی تقریبی جدول تشخیص داده شدند."
             )
         } finally {
@@ -159,6 +171,96 @@ class ColumnTotalEngine(private val context: Context) {
     private fun insetRange(a: Int, b: Int): IntRange {
         val pad = max(3, ((b - a) * 0.06).toInt())
         return (a + pad)..(b - pad)
+    }
+
+    private fun detectHandwritingRows(bitmap: Bitmap, columns: InvoiceColumns): List<IntRange> {
+        val x0 = columns.total.first.coerceAtLeast(0)
+        val x1 = columns.qty.last.coerceAtMost(bitmap.width - 1)
+        val y0 = (bitmap.height * 0.14).toInt()
+        val y1 = (bitmap.height * 0.70).toInt()
+        if (x1 <= x0 || y1 <= y0) return emptyList()
+
+        val scores = IntArray(y1 - y0 + 1)
+        val stepX = 2
+        for (y in y0..y1) {
+            var count = 0
+            var x = x0
+            while (x <= x1) {
+                val c = bitmap.getPixel(x, y)
+                if (isHandwritingPixel(c)) count++
+                x += stepX
+            }
+            scores[y - y0] = count
+        }
+
+        val widthSamples = max(1, (x1 - x0) / stepX)
+        val threshold = max(3, (widthSamples * 0.012).toInt())
+        val raw = mutableListOf<IntRange>()
+        var start = -1
+        var last = -1
+
+        for (i in scores.indices) {
+            if (scores[i] >= threshold) {
+                if (start < 0) start = i
+                last = i
+            } else if (start >= 0 && i - last > 4) {
+                if (last - start >= 4) raw += (start + y0)..(last + y0)
+                start = -1
+                last = -1
+            }
+        }
+        if (start >= 0 && last - start >= 4) raw += (start + y0)..(last + y0)
+
+        val merged = mutableListOf<IntRange>()
+        raw.forEach { band ->
+            if (merged.isEmpty()) {
+                merged += band
+            } else {
+                val prev = merged.last()
+                val gap = band.first - prev.last
+                if (gap <= bitmap.height * 0.018) {
+                    merged[merged.lastIndex] = prev.first..band.last
+                } else {
+                    merged += band
+                }
+            }
+        }
+
+        return merged
+            .filter { it.last - it.first in max(10, (bitmap.height * 0.012).toInt())..(bitmap.height * 0.10).toInt() }
+            .take(25)
+            .map { band ->
+                val pad = max(4, ((band.last - band.first) * 0.35).toInt())
+                max(y0, band.first - pad)..min(y1, band.last + pad)
+            }
+    }
+
+    private fun hasHandwrittenInk(cell: Bitmap): Boolean {
+        val total = max(1, cell.width * cell.height)
+        var ink = 0
+        val step = if (total > 180_000) 3 else 2
+        var y = 0
+        while (y < cell.height) {
+            var x = 0
+            while (x < cell.width) {
+                if (isHandwritingPixel(cell.getPixel(x, y))) ink++
+                x += step
+            }
+            y += step
+        }
+        val sampled = max(1, (cell.width / step) * (cell.height / step))
+        return ink.toDouble() / sampled.toDouble() >= 0.006
+    }
+
+    private fun isHandwritingPixel(c: Int): Boolean {
+        val r = Color.red(c)
+        val g = Color.green(c)
+        val b = Color.blue(c)
+        // جوهر آبی رایج فاکتور دست‌نویس؛ خطوط قرمز/صورتی فرم حذف می‌شوند.
+        val blueInk = b >= 65 && b > r * 1.08 && b > g * 1.05
+        // برای فاکتورهایی که با خودکار مشکی نوشته شده‌اند.
+        val darkNeutral = r < 70 && g < 70 && b < 95
+        return blueInk || darkNeutral
     }
 
     private fun chooseItemRows(height: Int, horizontal: List<Int>): List<IntRange> {
