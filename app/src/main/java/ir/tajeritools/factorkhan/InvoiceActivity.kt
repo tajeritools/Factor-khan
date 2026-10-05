@@ -138,7 +138,11 @@ class InvoiceActivity : AppCompatActivity() {
         }
         root.addView(scanButton)
 
-        root.addView(actionButton("🧠 حرفه‌ای دست‌خط فارسی (AI آنلاین)").apply {
+        root.addView(actionButton("🧠 آفلاین حرفه‌ای دست‌خط فارسی (Bina)").apply {
+            setOnClickListener { runOfflineBina() }
+        })
+
+        root.addView(actionButton("☁️ حرفه‌ای دست‌خط فارسی (AI آنلاین)").apply {
             setOnClickListener { runAiHandwriting() }
         })
 
@@ -147,7 +151,7 @@ class InvoiceActivity : AppCompatActivity() {
         })
 
         root.addView(TextView(this).apply {
-            text = "حالت آفلاین بدون اینترنت کار می‌کند. حالت AI آنلاین برای دست‌خط فارسی دقیق‌تر است و نتیجه را دوباره با محاسبات فاکتور کنترل می‌کند."
+            text = "سه حالت داری: OCR سبک آفلاین، مدل تخصصی Bina آفلاین برای دست‌خط فارسی، و AI آنلاین برای سخت‌ترین فاکتورها. هر سه نتیجه را با محاسبات فاکتور کنترل می‌کنند."
             gravity = Gravity.RIGHT
             textSize = 14f
             setPadding(0, dp(6), 0, dp(10))
@@ -293,6 +297,53 @@ class InvoiceActivity : AppCompatActivity() {
                         scanButton.isEnabled = true
                         scanButton.text = "🔎 آفلاین: خواندن عکس و استخراج اقلام"
                         toast("OCR انجام نشد: " + (e.message ?: "خطای ناشناخته"))
+                    }
+                }
+        }
+    }
+
+    private fun runOfflineBina() {
+        val file = imageFile
+        if (file == null || !file.exists()) {
+            toast("اول از فاکتور عکس بگیر یا تصویر را آپلود کن.")
+            return
+        }
+
+        scanButton.isEnabled = false
+        resultText.text = "در حال تحلیل آفلاین تخصصی دست‌خط فارسی با Bina..."
+
+        worker.execute {
+            runCatching { OfflineBinaEngine(this).recognizeInvoice(file) }
+                .onSuccess { result ->
+                    runOnUiThread {
+                        if (result.text.isNotBlank()) ocrInput.setText(result.text)
+
+                        rowViews.clear()
+                        itemContainer.removeAllViews()
+
+                        if (result.items.isNotEmpty()) {
+                            itemHint.text =
+                                result.items.size.toString() + " ردیف توسط Bina پیدا شد. اعداد را کنترل کن."
+                            result.items.forEach { addItemRow(it) }
+                        } else {
+                            itemHint.text =
+                                "Bina متن را خواند ولی ردیف کامل قابل محاسبه پیدا نکرد. متن OCR را بررسی یا ردیف دستی اضافه کن."
+                        }
+
+                        scanButton.isEnabled = true
+                        scanButton.text = "🔎 آفلاین: خواندن عکس و استخراج اقلام"
+
+                        val analysis = analyze()
+                        resultText.text = resultText.text.toString() +
+                            "\n\nBina: " + result.lineCount + " خط، اطمینان تقریبی " + result.confidence + "%" +
+                            "\nکنترل محاسبات: " + analysis.warning
+                    }
+                }
+                .onFailure { e ->
+                    runOnUiThread {
+                        scanButton.isEnabled = true
+                        scanButton.text = "🔎 آفلاین: خواندن عکس و استخراج اقلام"
+                        toast("مدل آفلاین Bina اجرا نشد: " + (e.message ?: "خطای ناشناخته"))
                     }
                 }
         }
