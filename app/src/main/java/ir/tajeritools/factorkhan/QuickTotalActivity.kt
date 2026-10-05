@@ -12,12 +12,12 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import java.io.File
 import java.io.FileOutputStream
-import kotlin.math.abs
 
 class QuickTotalActivity : AppCompatActivity() {
     private lateinit var preview: ImageView
     private lateinit var status: TextView
     private lateinit var result: TextView
+    private lateinit var aiConnectionStatus: TextView
     private var currentFile: File? = null
 
     private val picker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -27,13 +27,14 @@ class QuickTotalActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(buildUi())
+        refreshConnectionStatus()
     }
 
     private fun buildUi(): ScrollView {
         val root = verticalRoot()
         root.addView(titleText("کنترل سریع جمع فاکتور", 27f))
         root.addView(TextView(this).apply {
-            text = "فقط عکس فاکتور را انتخاب کن. برنامه ستون‌های تعداد، قیمت واحد و مبلغ ردیف را جدا می‌خواند، ضرب می‌کند و جمع کل محاسبه‌شده را می‌دهد."
+            text = "فقط عکس فاکتور را انتخاب کن. برنامه تعداد و قیمت واحد هر ردیف را می‌خواند، خودش ضرب می‌کند و جمع کل مستقل را می‌دهد."
             gravity = Gravity.RIGHT
             setPadding(0, 0, 0, dp(12))
         })
@@ -68,6 +69,13 @@ class QuickTotalActivity : AppCompatActivity() {
         root.addView(actionButton("🔑 تنظیم Azure Document Intelligence").apply {
             setOnClickListener { showAzureSettings() }
         })
+
+        aiConnectionStatus = TextView(this).apply {
+            gravity = Gravity.RIGHT
+            textSize = 15f
+            setPadding(0, dp(10), 0, dp(10))
+        }
+        root.addView(aiConnectionStatus)
 
         status = TextView(this).apply {
             text = "هنوز عکسی انتخاب نشده."
@@ -148,7 +156,8 @@ class QuickTotalActivity : AppCompatActivity() {
             .setNegativeButton("انصراف", null)
             .setPositiveButton("ذخیره") { _, _ ->
                 engine.saveKey(input.text.toString())
-                Toast.makeText(this, "کلید Mistral ذخیره شد.", Toast.LENGTH_SHORT).show()
+                refreshConnectionStatus()
+                Toast.makeText(this, "کلید Mistral ذخیره شد؛ اتصال بعد از اولین درخواست موفق تأیید می‌شود.", Toast.LENGTH_LONG).show()
             }
             .show()
     }
@@ -173,17 +182,10 @@ class QuickTotalActivity : AppCompatActivity() {
             runCatching { engine.analyzeInvoice(file) }
                 .onSuccess { a ->
                     val calculated = a.items.sumOf { it.computedRowTotal() }
-                    val printedRows = a.items.mapNotNull { it.printedRowTotal }.sum()
                     runOnUiThread {
                         val sb = StringBuilder()
                         sb.append("Mistral OCR / Document AI").append("\n")
                         sb.append("جمع محاسبه‌شده از تعداد × قیمت واحد: ").append(money(calculated)).append("\n")
-                        if (printedRows > 0) sb.append("جمع مبلغ‌های ردیف: ").append(money(printedRows)).append("\n")
-                        sb.append("جمع کل تشخیص‌داده‌شده روی فاکتور: ").append(money(a.printedTotal)).append("\n")
-                        if (a.printedTotal != null) {
-                            sb.append("اختلاف محاسبه با جمع چاپ‌شده: ")
-                                .append(money(kotlin.math.abs(calculated - a.printedTotal))).append("\n")
-                        }
                         sb.append("تعداد ردیف‌های استخراج‌شده: ").append(a.items.size).append("\n")
                         sb.append(a.note).append("\n\n")
                         a.items.forEachIndexed { i, item ->
@@ -191,18 +193,18 @@ class QuickTotalActivity : AppCompatActivity() {
                                 .append(": تعداد=").append(qtyText(item.quantity))
                                 .append(" | قیمت واحد=").append(money(item.unitPrice))
                                 .append(" | حاصل=").append(money(item.computedRowTotal()))
-                            if (item.printedRowTotal != null) {
-                                sb.append(" | مبلغ نوشته‌شده=").append(money(item.printedRowTotal))
-                            }
                             sb.append("\n")
                         }
                         status.text = "تحلیل Mistral انجام شد."
+                        refreshConnectionStatus()
                         result.text = sb.toString()
                     }
                 }
                 .onFailure { e ->
+                    engine.markVerified(false)
                     runOnUiThread {
                         status.text = "تحلیل Mistral انجام نشد."
+                        refreshConnectionStatus()
                         result.text = e.message ?: "خطای ناشناخته"
                     }
                 }
@@ -234,7 +236,8 @@ class QuickTotalActivity : AppCompatActivity() {
             .setNegativeButton("انصراف", null)
             .setPositiveButton("ذخیره") { _, _ ->
                 engine.save(endpoint.text.toString(), key.text.toString())
-                Toast.makeText(this, "تنظیمات Azure ذخیره شد.", Toast.LENGTH_SHORT).show()
+                refreshConnectionStatus()
+                Toast.makeText(this, "تنظیمات Azure ذخیره شد؛ اتصال بعد از اولین درخواست موفق تأیید می‌شود.", Toast.LENGTH_LONG).show()
             }
             .show()
     }
@@ -264,12 +267,6 @@ class QuickTotalActivity : AppCompatActivity() {
                         val sb = StringBuilder()
                         sb.append("Azure Document Intelligence").append("\n")
                         sb.append("جمع محاسبه‌شده از تعداد × قیمت واحد: ").append(money(calculated)).append("\n")
-                        if (printedRows > 0) sb.append("جمع مبلغ‌های ردیف: ").append(money(printedRows)).append("\n")
-                        sb.append("جمع کل تشخیص‌داده‌شده روی فاکتور: ").append(money(a.printedTotal)).append("\n")
-                        if (a.printedTotal != null) {
-                            sb.append("اختلاف محاسبه با جمع چاپ‌شده: ")
-                                .append(money(kotlin.math.abs(calculated - a.printedTotal))).append("\n")
-                        }
                         sb.append("تعداد ردیف‌های استخراج‌شده: ").append(a.items.size).append("\n")
                         sb.append(a.confidenceNote).append("\n\n")
                         a.items.forEachIndexed { i, item ->
@@ -277,18 +274,18 @@ class QuickTotalActivity : AppCompatActivity() {
                                 .append(": تعداد=").append(qtyText(item.quantity))
                                 .append(" | قیمت واحد=").append(money(item.unitPrice))
                                 .append(" | حاصل=").append(money(item.computedRowTotal()))
-                            if (item.printedRowTotal != null) {
-                                sb.append(" | مبلغ نوشته‌شده=").append(money(item.printedRowTotal))
-                            }
                             sb.append("\n")
                         }
                         status.text = "تحلیل Azure انجام شد."
+                        refreshConnectionStatus()
                         result.text = sb.toString()
                     }
                 }
                 .onFailure { e ->
+                    engine.markVerified(false)
                     runOnUiThread {
                         status.text = "تحلیل Azure انجام نشد."
+                        refreshConnectionStatus()
                         result.text = e.message ?: "خطای ناشناخته"
                     }
                 }
@@ -297,12 +294,7 @@ class QuickTotalActivity : AppCompatActivity() {
 
     private fun formatResult(r: ColumnTotalResult): String {
         val sb = StringBuilder()
-        sb.append("جمع کل محاسبه‌شده: ").append(money(r.calculatedGrandTotal)).append("\n")
-        if (r.printedRowsTotal > 0) {
-            sb.append("جمع مبلغ‌های خوانده‌شده از ستون PRICE: ").append(money(r.printedRowsTotal)).append("\n")
-            val diff = abs(r.calculatedGrandTotal - r.printedRowsTotal)
-            sb.append("اختلاف دو روش: ").append(money(diff)).append("\n")
-        }
+        sb.append("جمع کل محاسبه‌شده برنامه: ").append(money(r.calculatedGrandTotal)).append("\n")
         sb.append("ردیف قابل محاسبه: ").append(r.acceptedRows).append("\n")
         sb.append("ردیف ناقص/نامطمئن: ").append(r.rejectedRows).append("\n\n")
 
@@ -310,15 +302,28 @@ class QuickTotalActivity : AppCompatActivity() {
             sb.append("ردیف ").append(row.row).append(": ")
             sb.append("تعداد=").append(row.quantity?.let { qtyText(it) } ?: "؟")
             sb.append(" | قیمت واحد=").append(money(row.unitPrice))
-            sb.append(" | مبلغ محاسبه=").append(money(row.calculatedTotal))
-            if (row.printedTotal != null) sb.append(" | مبلغ نوشته‌شده=").append(money(row.printedTotal))
-            if (row.warning.isNotBlank()) sb.append("  ⚠ ").append(row.warning)
+            sb.append(" | حاصل=").append(money(row.calculatedTotal))
+            if (row.quantity == null || row.unitPrice == null) sb.append("  ⚠ نیاز به کنترل")
             sb.append("\n")
         }
 
         sb.append("\n").append(r.layoutNote)
-        sb.append("\n\nاگر یک ردیف علامت ⚠ دارد، فقط همان ردیف را از روی عکس کنترل کن.")
         return sb.toString()
+    }
+
+    private fun refreshConnectionStatus() {
+        val mistral = MistralDocumentAi(this)
+        val azure = AzureDocumentIntelligence(this)
+        aiConnectionStatus.text = listOf(
+            connectionLabel("Mistral", mistral.configured(), mistral.verified()),
+            connectionLabel("Azure", azure.configured(), azure.verified())
+        ).joinToString("\n")
+    }
+
+    private fun connectionLabel(name: String, configured: Boolean, verified: Boolean): String = when {
+        verified -> "✓ $name: متصل"
+        configured -> "◷ $name: تنظیم شده، هنوز تست نشده"
+        else -> "✗ $name: وصل نیست"
     }
 
     override fun onDestroy() {
