@@ -19,8 +19,13 @@ class MistralDocumentAi(private val context: Context) {
     private val prefs = context.getSharedPreferences("mistral_doc_ai", Context.MODE_PRIVATE)
 
     fun key(): String = prefs.getString("key", "").orEmpty().trim()
-    fun saveKey(value: String) = prefs.edit().putString("key", value.trim()).apply()
+    fun saveKey(value: String) = prefs.edit()
+        .putString("key", value.trim())
+        .putBoolean("verified", false)
+        .apply()
     fun configured(): Boolean = key().isNotBlank()
+    fun verified(): Boolean = configured() && prefs.getBoolean("verified", false)
+    fun markVerified(value: Boolean) = prefs.edit().putBoolean("verified", value).apply()
 
     fun analyzeInvoice(imageFile: File): MistralInvoiceAnalysis {
         require(configured()) { "کلید Mistral وارد نشده است." }
@@ -59,8 +64,13 @@ class MistralDocumentAi(private val context: Context) {
         val status = conn.responseCode
         val response = (if (status in 200..299) conn.inputStream else conn.errorStream)
             ?.bufferedReader()?.use { it.readText() }.orEmpty()
-        if (status !in 200..299) error("Mistral HTTP " + status + ": " + response.take(350))
-        return parse(JSONObject(response))
+        if (status !in 200..299) {
+            markVerified(false)
+            error("Mistral HTTP " + status + ": " + response.take(350))
+        }
+        val parsed = parse(JSONObject(response))
+        markVerified(true)
+        return parsed
     }
 
     private fun parse(root: JSONObject): MistralInvoiceAnalysis {
