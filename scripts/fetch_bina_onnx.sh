@@ -12,7 +12,7 @@ curl -L --fail --retry 3 -o "$TMP/inference/inference.pdiparams" "$BASE/inferenc
 curl -L --fail --retry 3 -o "$ROOT/dict.txt" "$BASE/persian_arabic_bina02_dict.txt"
 
 python3 -m pip install --upgrade pip
-python3 -m pip install paddle2onnx onnx
+python3 -m pip install paddlepaddle paddle2onnx onnx
 
 paddle2onnx \
   --model_dir "$TMP/inference" \
