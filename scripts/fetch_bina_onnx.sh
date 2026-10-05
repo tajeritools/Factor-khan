@@ -1,30 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="app/src/main/assets/bina"
-TMP=".bina-model"
-mkdir -p "$ROOT" "$TMP/inference"
+TMP=".khattat-model"
+mkdir -p "$TMP"
 
-BASE="https://huggingface.co/Reza2kn/Bina-0.2-RizehPizeh/resolve/main"
-
-curl -L --fail --retry 3 -o "$TMP/inference/inference.json" "$BASE/inference/inference.json"
-curl -L --fail --retry 3 -o "$TMP/inference/inference.pdiparams" "$BASE/inference/inference.pdiparams"
-curl -L --fail --retry 3 -o "$ROOT/dict.txt" "$BASE/persian_arabic_bina02_dict.txt"
-
-python3 -m pip install --upgrade pip
-python3 -m pip install paddlepaddle paddle2onnx onnx
-
-paddle2onnx \
-  --model_dir "$TMP/inference" \
-  --model_filename inference.json \
-  --params_filename inference.pdiparams \
-  --save_file "$ROOT/inference.onnx" \
-  --opset_version 17 \
-  --enable_onnx_checker True
+BASE="https://huggingface.co/saeidseyfi/khattat-crnn/resolve/main"
+curl -L --fail --retry 3 -o "$TMP/best.pt" "$BASE/best.pt"
+curl -L --fail --retry 3 -o "$TMP/vocab.json" "$BASE/vocab.json"
 
 python3 - <<'PY'
-import os
-p="app/src/main/assets/bina/inference.onnx"
-print("Bina ONNX size:", os.path.getsize(p))
-assert os.path.getsize(p) > 5_000_000
+import torch, json
+ck=torch.load(".khattat-model/best.pt", map_location="cpu", weights_only=False)
+print("CHECKPOINT_KEYS", list(ck.keys()))
+state=ck.get("model_state") or ck.get("model") or ck.get("state_dict")
+print("STATE_LEN", len(state))
+for k,v in state.items():
+    print("PARAM", k, tuple(v.shape))
+print("VOCAB_CHARS", ck.get("vocab_chars"))
+print("VOCAB_JSON", open(".khattat-model/vocab.json", encoding="utf-8").read()[:4000])
 PY
+
+exit 9
