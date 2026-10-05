@@ -114,10 +114,6 @@ confidence: عدد 0 تا 100
             .getJSONObject(0)
             .getString("text")
             .trim()
-            .removePrefix("\`\`\`json")
-            .removePrefix("\`\`\`")
-            .removeSuffix("\`\`\`")
-            .trim()
 
         val json = JSONObject(text)
         val itemsJson = json.optJSONArray("items") ?: JSONArray()
