@@ -24,10 +24,13 @@ class AzureDocumentIntelligence(private val context: Context) {
         prefs.edit()
             .putString("endpoint", endpoint.trim().trimEnd('/'))
             .putString("key", key.trim())
+            .putBoolean("verified", false)
             .apply()
     }
 
     fun configured(): Boolean = endpoint().startsWith("https://") && key().isNotBlank()
+    fun verified(): Boolean = configured() && prefs.getBoolean("verified", false)
+    fun markVerified(value: Boolean) = prefs.edit().putBoolean("verified", value).apply()
 
     fun analyzeInvoice(imageFile: File): AzureInvoiceAnalysis {
         require(configured()) { "Endpoint و Key سرویس Azure وارد نشده است." }
