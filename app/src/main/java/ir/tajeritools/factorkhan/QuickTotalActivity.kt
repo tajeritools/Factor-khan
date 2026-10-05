@@ -53,6 +53,14 @@ class QuickTotalActivity : AppCompatActivity() {
         run.setOnClickListener { analyze() }
         root.addView(run)
 
+        root.addView(actionButton("☁️ تحلیل آنلاین Azure Document Intelligence").apply {
+            setOnClickListener { analyzeWithAzure() }
+        })
+
+        root.addView(actionButton("🔑 تنظیم Azure Document Intelligence").apply {
+            setOnClickListener { showAzureSettings() }
+        })
+
         status = TextView(this).apply {
             text = "هنوز عکسی انتخاب نشده."
             gravity = Gravity.RIGHT
@@ -114,6 +122,92 @@ class QuickTotalActivity : AppCompatActivity() {
                     result.text = e.message ?: "خطای ناشناخته"
                 }
             }
+        }.start()
+    }
+
+    private fun showAzureSettings() {
+        val engine = AzureDocumentIntelligence(this)
+        val box = verticalRoot()
+
+        val endpoint = android.widget.EditText(this).apply {
+            hint = "Endpoint مثال: https://xxxx.cognitiveservices.azure.com"
+            setText(engine.endpoint())
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_URI
+        }
+        val key = android.widget.EditText(this).apply {
+            hint = "Azure Key"
+            setText(engine.key())
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
+        }
+
+        box.addView(endpoint)
+        box.addView(key)
+
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("تنظیم Azure Document Intelligence")
+            .setMessage("Endpoint و یکی از Keyهای سرویس Document Intelligence را وارد کن.")
+            .setView(box)
+            .setNegativeButton("انصراف", null)
+            .setPositiveButton("ذخیره") { _, _ ->
+                engine.save(endpoint.text.toString(), key.text.toString())
+                Toast.makeText(this, "تنظیمات Azure ذخیره شد.", Toast.LENGTH_SHORT).show()
+            }
+            .show()
+    }
+
+    private fun analyzeWithAzure() {
+        val file = currentFile
+        if (file == null) {
+            Toast.makeText(this, "اول عکس فاکتور را انتخاب کن.", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val engine = AzureDocumentIntelligence(this)
+        if (!engine.configured()) {
+            showAzureSettings()
+            return
+        }
+
+        status.text = "در حال تحلیل فاکتور با Azure Document Intelligence..."
+        result.text = ""
+
+        Thread {
+            runCatching { engine.analyzeInvoice(file) }
+                .onSuccess { a ->
+                    val calculated = a.items.sumOf { it.computedRowTotal() }
+                    val printedRows = a.items.mapNotNull { it.printedRowTotal }.sum()
+                    runOnUiThread {
+                        val sb = StringBuilder()
+                        sb.append("Azure Document Intelligence").append("\n")
+                        sb.append("جمع محاسبه‌شده از تعداد × قیمت واحد: ").append(money(calculated)).append("\n")
+                        if (printedRows > 0) sb.append("جمع مبلغ‌های ردیف: ").append(money(printedRows)).append("\n")
+                        sb.append("جمع کل تشخیص‌داده‌شده روی فاکتور: ").append(money(a.printedTotal)).append("\n")
+                        if (a.printedTotal != null) {
+                            sb.append("اختلاف محاسبه با جمع چاپ‌شده: ")
+                                .append(money(kotlin.math.abs(calculated - a.printedTotal))).append("\n")
+                        }
+                        sb.append("تعداد ردیف‌های استخراج‌شده: ").append(a.items.size).append("\n")
+                        sb.append(a.confidenceNote).append("\n\n")
+                        a.items.forEachIndexed { i, item ->
+                            sb.append("ردیف ").append(i + 1)
+                                .append(": تعداد=").append(qtyText(item.quantity))
+                                .append(" | قیمت واحد=").append(money(item.unitPrice))
+                                .append(" | حاصل=").append(money(item.computedRowTotal()))
+                            if (item.printedRowTotal != null) {
+                                sb.append(" | مبلغ نوشته‌شده=").append(money(item.printedRowTotal))
+                            }
+                            sb.append("\n")
+                        }
+                        status.text = "تحلیل Azure انجام شد."
+                        result.text = sb.toString()
+                    }
+                }
+                .onFailure { e ->
+                    runOnUiThread {
+                        status.text = "تحلیل Azure انجام نشد."
+                        result.text = e.message ?: "خطای ناشناخته"
+                    }
+                }
         }.start()
     }
 
