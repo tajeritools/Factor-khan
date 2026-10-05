@@ -182,7 +182,7 @@ class InvoiceActivity : AppCompatActivity() {
         })
 
         manualTotalInput = EditText(this).apply {
-            hint = "جمع کل چاپ‌شده روی فاکتور (اختیاری)"
+            hint = "جمع کل چاپ‌شده روی فاکتور (مثال 10.000.000)"
             inputType = InputType.TYPE_CLASS_NUMBER
         }
         root.addView(manualTotalInput)
@@ -328,13 +328,13 @@ class InvoiceActivity : AppCompatActivity() {
         }
         val unitPrice = EditText(this).apply {
             hint = "قیمت واحد"
-            setText(if (item.unitPrice > 0) item.unitPrice.toString() else "")
+            setText(if (item.unitPrice > 0) money(item.unitPrice) else "")
             inputType = InputType.TYPE_CLASS_NUMBER
             gravity = Gravity.CENTER
         }
         val printedTotal = EditText(this).apply {
             hint = "مبلغ ردیف"
-            setText(item.printedRowTotal?.toString().orEmpty())
+            setText(item.printedRowTotal?.let { money(it) }.orEmpty())
             inputType = InputType.TYPE_CLASS_NUMBER
             gravity = Gravity.CENTER
         }
@@ -432,6 +432,9 @@ class InvoiceActivity : AppCompatActivity() {
         )
 
         val sb = StringBuilder()
+        sb.append("━━━━━━━━━━━━━━━━\n")
+        sb.append("جمع کل فاکتور: ").append(money(a.expectedFinal)).append("\n")
+        sb.append("━━━━━━━━━━━━━━━━\n")
         sb.append("تعداد ردیف‌های قابل محاسبه: ").append(items.size).append("\n")
         sb.append("جمع اقلام: ").append(money(a.subtotal)).append("\n")
         sb.append("مالیات/ارزش افزوده: ").append(money(a.tax)).append("\n")
