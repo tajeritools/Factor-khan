@@ -19,6 +19,7 @@ import java.text.NumberFormat
 import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.max
+import kotlin.math.roundToLong
 
 fun Context.dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
 
@@ -44,6 +45,9 @@ fun Context.verticalRoot(): LinearLayout = LinearLayout(this).apply {
 fun money(v: Long?): String =
     if (v == null) "—" else NumberFormat.getNumberInstance(Locale("fa", "IR")).format(v)
 
+fun qtyText(v: Double): String =
+    if (abs(v - v.toLong()) < 0.0001) v.toLong().toString() else String.format(Locale.US, "%.3f", v).trimEnd('0').trimEnd('.')
+
 data class Customer(
     val id: Long,
     val name: String,
@@ -64,13 +68,30 @@ data class InvoiceRecord(
     val createdAt: Long
 )
 
-class DbHelper(context: Context) : SQLiteOpenHelper(context, "factor_khan.db", null, 1) {
+data class InvoiceItem(
+    val id: Long = 0,
+    val invoiceId: Long = 0,
+    val description: String,
+    val quantity: Double,
+    val unitPrice: Long,
+    val printedRowTotal: Long? = null,
+    val confidence: Int = 0
+) {
+    fun computedRowTotal(): Long = (quantity * unitPrice.toDouble()).roundToLong()
+}
+
+class DbHelper(context: Context) : SQLiteOpenHelper(context, "factor_khan.db", null, 2) {
     override fun onConfigure(db: SQLiteDatabase) {
         super.onConfigure(db)
         db.setForeignKeyConstraintsEnabled(true)
     }
 
     override fun onCreate(db: SQLiteDatabase) {
+        createBaseTables(db)
+        createItemTable(db)
+    }
+
+    private fun createBaseTables(db: SQLiteDatabase) {
         db.execSQL("""
             CREATE TABLE customers(
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -97,7 +118,25 @@ class DbHelper(context: Context) : SQLiteOpenHelper(context, "factor_khan.db", n
         db.execSQL("CREATE INDEX idx_invoices_customer ON invoices(customer_id, created_at DESC)")
     }
 
-    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
+    private fun createItemTable(db: SQLiteDatabase) {
+        db.execSQL("""
+            CREATE TABLE IF NOT EXISTS invoice_items(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                invoice_id INTEGER NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                quantity REAL NOT NULL DEFAULT 1,
+                unit_price INTEGER NOT NULL DEFAULT 0,
+                printed_row_total INTEGER,
+                confidence INTEGER NOT NULL DEFAULT 0,
+                FOREIGN KEY(invoice_id) REFERENCES invoices(id) ON DELETE CASCADE
+            )
+        """.trimIndent())
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_invoice_items_invoice ON invoice_items(invoice_id, id)")
+    }
+
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        if (oldVersion < 2) createItemTable(db)
+    }
 
     fun addCustomer(name: String, phone: String, notes: String): Long {
         val v = ContentValues().apply {
@@ -164,6 +203,28 @@ class DbHelper(context: Context) : SQLiteOpenHelper(context, "factor_khan.db", n
         ).use { c -> return if (c.moveToFirst()) c.toInvoice() else null }
     }
 
+    fun invoiceItems(invoiceId: Long): List<InvoiceItem> {
+        val out = mutableListOf<InvoiceItem>()
+        readableDatabase.rawQuery(
+            """SELECT id,invoice_id,description,quantity,unit_price,printed_row_total,confidence
+               FROM invoice_items WHERE invoice_id=? ORDER BY id""",
+            arrayOf(invoiceId.toString())
+        ).use { c ->
+            while (c.moveToNext()) {
+                out += InvoiceItem(
+                    id = c.getLong(0),
+                    invoiceId = c.getLong(1),
+                    description = c.getString(2),
+                    quantity = c.getDouble(3),
+                    unitPrice = c.getLong(4),
+                    printedRowTotal = if (c.isNull(5)) null else c.getLong(5),
+                    confidence = c.getInt(6)
+                )
+            }
+        }
+        return out
+    }
+
     fun saveInvoice(
         id: Long?,
         customerId: Long,
@@ -172,23 +233,47 @@ class DbHelper(context: Context) : SQLiteOpenHelper(context, "factor_khan.db", n
         ocrText: String,
         computedTotal: Long?,
         reportedTotal: Long?,
-        statusMessage: String
+        statusMessage: String,
+        items: List<InvoiceItem> = emptyList()
     ): Long {
-        val v = ContentValues().apply {
-            put("customer_id", customerId)
-            put("title", title.ifBlank { "فاکتور" })
-            put("image_path", imagePath)
-            put("ocr_text", ocrText)
-            if (computedTotal == null) putNull("computed_total") else put("computed_total", computedTotal)
-            if (reportedTotal == null) putNull("reported_total") else put("reported_total", reportedTotal)
-            put("status_message", statusMessage)
-            put("created_at", System.currentTimeMillis())
-        }
-        return if (id == null || id <= 0L) {
-            writableDatabase.insertOrThrow("invoices", null, v)
-        } else {
-            writableDatabase.update("invoices", v, "id=?", arrayOf(id.toString()))
-            id
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            val v = ContentValues().apply {
+                put("customer_id", customerId)
+                put("title", title.ifBlank { "فاکتور" })
+                put("image_path", imagePath)
+                put("ocr_text", ocrText)
+                if (computedTotal == null) putNull("computed_total") else put("computed_total", computedTotal)
+                if (reportedTotal == null) putNull("reported_total") else put("reported_total", reportedTotal)
+                put("status_message", statusMessage)
+                put("created_at", System.currentTimeMillis())
+            }
+            val invoiceId = if (id == null || id <= 0L) {
+                db.insertOrThrow("invoices", null, v)
+            } else {
+                db.update("invoices", v, "id=?", arrayOf(id.toString()))
+                id
+            }
+
+            db.delete("invoice_items", "invoice_id=?", arrayOf(invoiceId.toString()))
+            items.forEach { item ->
+                val iv = ContentValues().apply {
+                    put("invoice_id", invoiceId)
+                    put("description", item.description.trim())
+                    put("quantity", item.quantity)
+                    put("unit_price", item.unitPrice)
+                    if (item.printedRowTotal == null) putNull("printed_row_total")
+                    else put("printed_row_total", item.printedRowTotal)
+                    put("confidence", item.confidence)
+                }
+                db.insertOrThrow("invoice_items", null, iv)
+            }
+
+            db.setTransactionSuccessful()
+            return invoiceId
+        } finally {
+            db.endTransaction()
         }
     }
 
@@ -224,11 +309,14 @@ data class AnalysisResult(
 )
 
 object InvoiceAnalyzer {
-    private val totalWords = listOf("جمع کل", "قابل پرداخت", "مبلغ نهایی", "جمع نهایی", "grand total", "amount due")
+    private val totalWords = listOf("جمع کل", "قابل پرداخت", "مبلغ نهایی", "جمع نهایی", "grand total", "amount due", "total")
     private val taxWords = listOf("مالیات", "ارزش افزوده", "مالیات بر ارزش افزوده", "vat", "tax")
     private val discountWords = listOf("تخفیف", "discount")
-    private val ignoreWords = listOf("شماره فاکتور", "تلفن", "موبایل", "تاریخ", "کد ملی", "شناسه", "invoice no", "phone", "date")
-    private val numberRegex = Regex("""[-+]?\d[\d,٬،.]*""")
+    private val ignoreWords = listOf(
+        "شماره فاکتور", "تلفن", "موبایل", "تاریخ", "کد ملی", "شناسه",
+        "invoice no", "phone", "date", "s.no", "price", "unity price", "qty", "description"
+    )
+    private val numberRegex = Regex("""[-+]?\d[\d,٬،]*(?:\.\d+)?""")
 
     fun normalizeDigits(input: String): String {
         val fa = "۰۱۲۳۴۵۶۷۸۹"
@@ -249,12 +337,105 @@ object InvoiceAnalyzer {
         return sb.toString()
     }
 
-    fun parseMoney(text: String): Long? {
-        val normalized = normalizeDigits(text).replace(",", "").replace(" ", "")
-        return normalized.toDoubleOrNull()?.toLong()
+    fun parseNumber(text: String): Double? {
+        val normalized = normalizeDigits(text)
+            .replace(",", "")
+            .replace(" ", "")
+            .trim()
+        return normalized.toDoubleOrNull()
     }
 
-    fun analyze(raw: String, manualReported: Long? = null): AnalysisResult {
+    fun parseMoney(text: String): Long? = parseNumber(text)?.roundToLong()
+
+    fun extractItems(raw: String): List<InvoiceItem> {
+        val lines = normalizeDigits(raw).lines().map { it.trim() }.filter { it.isNotBlank() }
+        val out = mutableListOf<InvoiceItem>()
+
+        lines.forEach { line ->
+            val lower = line.lowercase()
+            if ((totalWords + taxWords + discountWords + ignoreWords).any { lower.contains(it.lowercase()) }) return@forEach
+
+            val matches = numberRegex.findAll(line).toList()
+            val values = matches.mapNotNull { parseNumber(it.value) }
+            if (values.size < 2) return@forEach
+
+            val description = numberRegex.replace(line, " ")
+                .replace(Regex("""\s+"""), " ")
+                .trim(' ', '-', ':', '|', '،', ',')
+
+            var best: InvoiceItem? = null
+            var bestScore = Double.MAX_VALUE
+
+            if (values.size >= 3) {
+                val tail = values.takeLast(minOf(4, values.size))
+                for (qi in tail.indices) {
+                    for (ui in tail.indices) {
+                        if (ui == qi) continue
+                        for (ti in tail.indices) {
+                            if (ti == qi || ti == ui) continue
+                            val q = tail[qi]
+                            val u = tail[ui]
+                            val t = tail[ti]
+                            if (q <= 0.0 || q > 10000.0 || u <= 0.0 || t <= 0.0) continue
+                            val calc = q * u
+                            val rel = abs(calc - t) / max(1.0, t)
+                            val qtyPenalty = if (q <= 500.0) 0.0 else 0.4
+                            val score = rel + qtyPenalty
+                            if (score < bestScore) {
+                                bestScore = score
+                                best = InvoiceItem(
+                                    description = description.ifBlank { "کالا" },
+                                    quantity = q,
+                                    unitPrice = u.roundToLong(),
+                                    printedRowTotal = t.roundToLong(),
+                                    confidence = when {
+                                        rel <= 0.02 -> 95
+                                        rel <= 0.08 -> 80
+                                        rel <= 0.20 -> 60
+                                        else -> 40
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (best == null) {
+                val a = values[values.size - 2]
+                val b = values.last()
+                val (q, u) = if (a <= 500.0 && b > a) a to b else 1.0 to b
+                best = InvoiceItem(
+                    description = description.ifBlank { "کالا" },
+                    quantity = q,
+                    unitPrice = u.roundToLong(),
+                    printedRowTotal = null,
+                    confidence = if (values.size >= 2) 45 else 25
+                )
+            }
+
+            if (best!!.unitPrice > 0L && best!!.quantity > 0.0) out += best!!
+        }
+
+        return dedupeItems(out)
+    }
+
+    private fun dedupeItems(items: List<InvoiceItem>): List<InvoiceItem> {
+        val seen = linkedSetOf<String>()
+        val result = mutableListOf<InvoiceItem>()
+        items.forEach { item ->
+            val key = item.description.lowercase().replace(" ", "") + "|" +
+                qtyText(item.quantity) + "|" + item.unitPrice
+            if (seen.add(key)) result += item
+        }
+        return result
+    }
+
+    fun analyze(
+        raw: String,
+        manualReported: Long? = null,
+        structuredItems: List<InvoiceItem> = emptyList()
+    ): AnalysisResult {
         val lines = normalizeDigits(raw).lines().map { it.trim() }.filter { it.isNotBlank() }
 
         fun lastAmount(line: String): Long? =
@@ -269,31 +450,47 @@ object InvoiceAnalyzer {
         val tax = findKeywordAmount(taxWords) ?: 0L
         val discount = findKeywordAmount(discountWords) ?: 0L
         val used = mutableListOf<String>()
-        var subtotal = 0L
 
-        for (line in lines) {
-            val lower = line.lowercase()
-            if ((totalWords + taxWords + discountWords + ignoreWords).any { lower.contains(it.lowercase()) }) continue
-            val nums = numberRegex.findAll(line).mapNotNull { parseMoney(it.value) }.filter { it >= 0 }.toList()
-            if (nums.isEmpty()) continue
-            val hasLetters = line.any { it.isLetter() }
-            val likelyRow = nums.size >= 2 || (hasLetters && nums.last() >= 1000)
-            if (!likelyRow) continue
-            val rowTotal = nums.last()
-            if (rowTotal <= 0L) continue
-            subtotal += rowTotal
-            used += line
+        val subtotal = if (structuredItems.isNotEmpty()) {
+            structuredItems.sumOf { it.computedRowTotal() }
+        } else {
+            var s = 0L
+            for (line in lines) {
+                val lower = line.lowercase()
+                if ((totalWords + taxWords + discountWords + ignoreWords).any { lower.contains(it.lowercase()) }) continue
+                val nums = numberRegex.findAll(line).mapNotNull { parseMoney(it.value) }.filter { it >= 0 }.toList()
+                if (nums.isEmpty()) continue
+                val hasLetters = line.any { it.isLetter() }
+                val likelyRow = nums.size >= 2 || (hasLetters && nums.last() >= 1000)
+                if (!likelyRow) continue
+                val rowTotal = nums.last()
+                if (rowTotal <= 0L) continue
+                s += rowTotal
+                used += line
+            }
+            s
         }
 
         val expected = (subtotal + tax - discount).coerceAtLeast(0)
         val diff = reported?.let { expected - it }
         val tolerance = reported?.let { max(1000L, (it * 0.005).toLong()) } ?: 1000L
 
+        val rowMismatch = structuredItems.count { item ->
+            val printed = item.printedRowTotal ?: return@count false
+            abs(item.computedRowTotal() - printed) > max(1000L, (printed * 0.005).toLong())
+        }
+
         val warning = when {
-            reported == null -> "جمع کل چاپ‌شده پیدا نشد؛ عدد نهایی را دستی وارد کنید."
-            used.isEmpty() -> "ردیف‌های فاکتور با اطمینان کافی تشخیص داده نشدند؛ متن OCR را بررسی و اصلاح کنید."
-            abs(diff ?: 0L) <= tolerance -> "✓ جمع فاکتور با ردیف‌های تشخیص‌داده‌شده هم‌خوان است."
-            else -> "⚠ اختلاف " + money(abs(diff!!)) + " بین محاسبه ردیف‌ها و جمع کل دیده شد. فاکتور را بررسی کنید."
+            structuredItems.isNotEmpty() && rowMismatch > 0 ->
+                "⚠ در $rowMismatch ردیف، تعداد × قیمت واحد با مبلغ ردیف نمی‌خواند. ردیف‌های علامت‌دار را بررسی کنید."
+            reported == null ->
+                "جمع کل چاپ‌شده پیدا نشد؛ اگر روی فاکتور هست آن را دستی وارد کنید."
+            structuredItems.isEmpty() && used.isEmpty() ->
+                "ردیف‌های فاکتور با اطمینان کافی تشخیص داده نشدند؛ متن OCR یا اقلام را بررسی کنید."
+            abs(diff ?: 0L) <= tolerance ->
+                "✓ جمع فاکتور با اقلام تشخیص‌داده‌شده هم‌خوان است."
+            else ->
+                "⚠ اختلاف " + money(abs(diff!!)) + " بین محاسبه اقلام و جمع کل دیده شد. فاکتور را بررسی کنید."
         }
 
         return AnalysisResult(subtotal, tax, discount, expected, reported, diff, warning, used)
@@ -309,20 +506,39 @@ class OcrEngine(private val context: Context) {
     fun recognize(imageFile: File): OcrResult {
         ensureModels()
         val bitmap = loadForOcr(imageFile)
-        val api = TessBaseAPI()
-        try {
-            val ok = api.init(root.absolutePath, "fas+eng")
-            if (!ok) error("راه‌اندازی OCR ناموفق بود.")
-            api.setPageSegMode(TessBaseAPI.PageSegMode.PSM_AUTO)
-            api.setVariable("preserve_interword_spaces", "1")
-            api.setImage(bitmap)
-            val text = api.getUTF8Text().orEmpty()
-            val confidence = api.meanConfidence()
-            return OcrResult(text, confidence)
-        } finally {
-            api.recycle()
-            bitmap.recycle()
+        val passes = listOf(
+            TessBaseAPI.PageSegMode.PSM_AUTO,
+            TessBaseAPI.PageSegMode.PSM_SPARSE_TEXT,
+            TessBaseAPI.PageSegMode.PSM_SINGLE_BLOCK
+        )
+
+        var bestText = ""
+        var bestConfidence = -1
+
+        for (mode in passes) {
+            val api = TessBaseAPI()
+            try {
+                val ok = api.init(root.absolutePath, "fas+eng")
+                if (!ok) error("راه‌اندازی OCR ناموفق بود.")
+                api.setPageSegMode(mode)
+                api.setVariable("preserve_interword_spaces", "1")
+                api.setImage(bitmap)
+                val text = api.getUTF8Text().orEmpty()
+                val confidence = api.meanConfidence()
+                if (confidence > bestConfidence && text.count { it.isDigit() } >= bestText.count { it.isDigit() } / 2) {
+                    bestText = text
+                    bestConfidence = confidence
+                } else if (text.count { it.isDigit() } > bestText.count { it.isDigit() } + 4) {
+                    bestText = text
+                    bestConfidence = confidence
+                }
+            } finally {
+                api.recycle()
+            }
         }
+
+        bitmap.recycle()
+        return OcrResult(bestText, bestConfidence.coerceAtLeast(0))
     }
 
     private fun ensureModels() {
@@ -341,7 +557,7 @@ class OcrEngine(private val context: Context) {
         val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeFile(file.absolutePath, opts)
         var sample = 1
-        while (opts.outWidth / sample > 2200 || opts.outHeight / sample > 2200) sample *= 2
+        while (opts.outWidth / sample > 2600 || opts.outHeight / sample > 2600) sample *= 2
 
         val decoded = BitmapFactory.decodeFile(
             file.absolutePath,
@@ -369,10 +585,12 @@ class OcrEngine(private val context: Context) {
 
         val gray = Bitmap.createBitmap(rotated.width, rotated.height, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(gray)
+        canvas.drawColor(Color.WHITE)
+
         val matrix = ColorMatrix().apply {
             setSaturation(0f)
-            val contrast = 1.25f
-            val translate = (-.5f * contrast + .5f) * 255f
+            val contrast = 1.45f
+            val translate = (-.5f * contrast + .5f) * 255f + 12f
             postConcat(ColorMatrix(floatArrayOf(
                 contrast,0f,0f,0f,translate,
                 0f,contrast,0f,0f,translate,
