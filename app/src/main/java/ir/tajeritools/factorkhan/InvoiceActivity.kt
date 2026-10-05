@@ -142,6 +142,14 @@ class InvoiceActivity : AppCompatActivity() {
             setOnClickListener { runOfflineBina() }
         })
 
+        root.addView(actionButton("🧠 Mistral OCR / Document AI").apply {
+            setOnClickListener { runMistralInvoice() }
+        })
+
+        root.addView(actionButton("🔑 تنظیم Mistral").apply {
+            setOnClickListener { showMistralSettingsDialog() }
+        })
+
         root.addView(actionButton("☁️ OpenAI حرفه‌ای دست‌خط فارسی").apply {
             setOnClickListener { runAiHandwriting() }
         })
@@ -151,7 +159,7 @@ class InvoiceActivity : AppCompatActivity() {
         })
 
         root.addView(TextView(this).apply {
-            text = "سه حالت داری: OCR سبک آفلاین، مدل تخصصی Bina آفلاین، و OpenAI آنلاین برای سخت‌ترین دست‌خط‌ها. کلید OpenAI داخل APK ذخیره نمی‌شود و درخواست از سرور امن عبور می‌کند."
+            text = "چهار حالت داری: OCR سبک آفلاین، Bina آفلاین، Mistral OCR برای سند و جدول، و OpenAI آنلاین. برای فاکتورهای جدولی اول Mistral را امتحان کن."
             gravity = Gravity.RIGHT
             textSize = 14f
             setPadding(0, dp(6), 0, dp(10))
@@ -344,6 +352,80 @@ class InvoiceActivity : AppCompatActivity() {
                         scanButton.isEnabled = true
                         scanButton.text = "🔎 آفلاین: خواندن عکس و استخراج اقلام"
                         toast("مدل آفلاین Bina اجرا نشد: " + (e.message ?: "خطای ناشناخته"))
+                    }
+                }
+        }
+    }
+
+    private fun showMistralSettingsDialog() {
+        val engine = MistralDocumentAi(this)
+        val input = EditText(this).apply {
+            hint = "Mistral API Key"
+            setText(engine.key())
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("تنظیم Mistral OCR")
+            .setMessage("کلید Mistral را وارد کن.")
+            .setView(input)
+            .setNegativeButton("انصراف", null)
+            .setPositiveButton("ذخیره") { _, _ ->
+                engine.saveKey(input.text.toString())
+                toast("کلید Mistral ذخیره شد.")
+            }
+            .show()
+    }
+
+    private fun runMistralInvoice() {
+        val file = imageFile
+        if (file == null || !file.exists()) {
+            toast("اول از فاکتور عکس بگیر یا تصویر را آپلود کن.")
+            return
+        }
+
+        val engine = MistralDocumentAi(this)
+        if (!engine.configured()) {
+            showMistralSettingsDialog()
+            return
+        }
+
+        scanButton.isEnabled = false
+        resultText.text = "در حال تحلیل فاکتور با Mistral OCR / Document AI..."
+
+        worker.execute {
+            runCatching { engine.analyzeInvoice(file) }
+                .onSuccess { result ->
+                    runOnUiThread {
+                        if (result.rawText.isNotBlank()) ocrInput.setText(result.rawText)
+
+                        rowViews.clear()
+                        itemContainer.removeAllViews()
+
+                        if (result.items.isNotEmpty()) {
+                            itemHint.text =
+                                result.items.size.toString() + " ردیف توسط Mistral پیدا شد. اعداد را کنترل کن."
+                            result.items.forEach { addItemRow(it) }
+                        } else {
+                            itemHint.text = "Mistral ردیف کامل قابل محاسبه پیدا نکرد."
+                        }
+
+                        result.printedTotal?.let { manualTotalInput.setText(it.toString()) }
+
+                        scanButton.isEnabled = true
+                        scanButton.text = "🔎 آفلاین: خواندن عکس و استخراج اقلام"
+
+                        val analysis = analyze()
+                        resultText.text = resultText.text.toString() +
+                            "\n\nMistral: " + result.note +
+                            "\nکنترل محاسبات: " + analysis.warning
+                    }
+                }
+                .onFailure { e ->
+                    runOnUiThread {
+                        scanButton.isEnabled = true
+                        scanButton.text = "🔎 آفلاین: خواندن عکس و استخراج اقلام"
+                        toast("تحلیل Mistral انجام نشد: " + (e.message ?: "خطای ناشناخته"))
                     }
                 }
         }
