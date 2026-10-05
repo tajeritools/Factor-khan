@@ -20,7 +20,7 @@ cd - >/dev/null
 python3 -m pip install --upgrade pip
 python3 -m pip install "paddlepaddle==3.3.1" "paddle2onnx==2.1.0" "onnx==1.17.0" pyyaml shapely pyclipper lmdb opencv-python-headless rapidfuzz
 
-PYTHONPATH="$PPOCR:$PYTHONPATH" python3 - <<'PY'
+PYTHONPATH="$PPOCR:${PYTHONPATH:-}" python3 - <<'PY'
 import os, sys, yaml, paddle
 sys.path.insert(0, ".bina-build/PaddleOCR")
 
