@@ -53,6 +53,14 @@ class QuickTotalActivity : AppCompatActivity() {
         run.setOnClickListener { analyze() }
         root.addView(run)
 
+        root.addView(actionButton("🧠 Mistral OCR / Document AI").apply {
+            setOnClickListener { analyzeWithMistral() }
+        })
+
+        root.addView(actionButton("🔑 تنظیم Mistral").apply {
+            setOnClickListener { showMistralSettings() }
+        })
+
         root.addView(actionButton("☁️ تحلیل آنلاین Azure Document Intelligence").apply {
             setOnClickListener { analyzeWithAzure() }
         })
@@ -122,6 +130,82 @@ class QuickTotalActivity : AppCompatActivity() {
                     result.text = e.message ?: "خطای ناشناخته"
                 }
             }
+        }.start()
+    }
+
+    private fun showMistralSettings() {
+        val engine = MistralDocumentAi(this)
+        val input = android.widget.EditText(this).apply {
+            hint = "Mistral API Key"
+            setText(engine.key())
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
+        }
+
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("تنظیم Mistral OCR")
+            .setMessage("کلید Mistral را وارد کن. این حالت برای OCR اسناد و فاکتورهای فارسی و دست‌نویس استفاده می‌شود.")
+            .setView(input)
+            .setNegativeButton("انصراف", null)
+            .setPositiveButton("ذخیره") { _, _ ->
+                engine.saveKey(input.text.toString())
+                Toast.makeText(this, "کلید Mistral ذخیره شد.", Toast.LENGTH_SHORT).show()
+            }
+            .show()
+    }
+
+    private fun analyzeWithMistral() {
+        val file = currentFile
+        if (file == null) {
+            Toast.makeText(this, "اول عکس فاکتور را انتخاب کن.", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val engine = MistralDocumentAi(this)
+        if (!engine.configured()) {
+            showMistralSettings()
+            return
+        }
+
+        status.text = "در حال تحلیل فاکتور با Mistral OCR..."
+        result.text = ""
+
+        Thread {
+            runCatching { engine.analyzeInvoice(file) }
+                .onSuccess { a ->
+                    val calculated = a.items.sumOf { it.computedRowTotal() }
+                    val printedRows = a.items.mapNotNull { it.printedRowTotal }.sum()
+                    runOnUiThread {
+                        val sb = StringBuilder()
+                        sb.append("Mistral OCR / Document AI").append("\n")
+                        sb.append("جمع محاسبه‌شده از تعداد × قیمت واحد: ").append(money(calculated)).append("\n")
+                        if (printedRows > 0) sb.append("جمع مبلغ‌های ردیف: ").append(money(printedRows)).append("\n")
+                        sb.append("جمع کل تشخیص‌داده‌شده روی فاکتور: ").append(money(a.printedTotal)).append("\n")
+                        if (a.printedTotal != null) {
+                            sb.append("اختلاف محاسبه با جمع چاپ‌شده: ")
+                                .append(money(kotlin.math.abs(calculated - a.printedTotal))).append("\n")
+                        }
+                        sb.append("تعداد ردیف‌های استخراج‌شده: ").append(a.items.size).append("\n")
+                        sb.append(a.note).append("\n\n")
+                        a.items.forEachIndexed { i, item ->
+                            sb.append("ردیف ").append(i + 1)
+                                .append(": تعداد=").append(qtyText(item.quantity))
+                                .append(" | قیمت واحد=").append(money(item.unitPrice))
+                                .append(" | حاصل=").append(money(item.computedRowTotal()))
+                            if (item.printedRowTotal != null) {
+                                sb.append(" | مبلغ نوشته‌شده=").append(money(item.printedRowTotal))
+                            }
+                            sb.append("\n")
+                        }
+                        status.text = "تحلیل Mistral انجام شد."
+                        result.text = sb.toString()
+                    }
+                }
+                .onFailure { e ->
+                    runOnUiThread {
+                        status.text = "تحلیل Mistral انجام نشد."
+                        result.text = e.message ?: "خطای ناشناخته"
+                    }
+                }
         }.start()
     }
 
