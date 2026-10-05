@@ -1,0 +1,3 @@
+package ir.tajeritools.factorkhan
+
+class MistralDocumentAiPlaceholder
