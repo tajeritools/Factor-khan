@@ -31,9 +31,17 @@ class MainActivity : AppCompatActivity() {
             gravity = Gravity.RIGHT
             setPadding(0, 0, 0, dp(12))
         })
+
+        root.addView(actionButton("🧮 کنترل سریع جمع فاکتور").apply {
+            setOnClickListener {
+                startActivity(Intent(this@MainActivity, QuickTotalActivity::class.java))
+            }
+        })
+
         root.addView(actionButton("＋ مشتری جدید").apply {
             setOnClickListener { showCustomerDialog() }
         })
+
         list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         root.addView(list)
         return ScrollView(this).apply { addView(root) }
