@@ -33,6 +33,7 @@ class InvoiceActivity : AppCompatActivity() {
     private lateinit var scanButton: Button
     private lateinit var itemContainer: LinearLayout
     private lateinit var itemHint: TextView
+    private lateinit var aiConnectionStatus: TextView
 
     private val rowViews = mutableListOf<ItemRowViews>()
     private val worker = Executors.newSingleThreadExecutor()
@@ -78,6 +79,7 @@ class InvoiceActivity : AppCompatActivity() {
         }
 
         setContentView(buildUi())
+        refreshAiConnectionStatus()
         invoiceId?.let { loadInvoice(it) }
     }
 
@@ -157,6 +159,13 @@ class InvoiceActivity : AppCompatActivity() {
         root.addView(actionButton("🔐 تنظیم اتصال امن OpenAI").apply {
             setOnClickListener { showOpenAiSettingsDialog() }
         })
+
+        aiConnectionStatus = TextView(this).apply {
+            gravity = Gravity.RIGHT
+            textSize = 15f
+            setPadding(0, dp(8), 0, dp(8))
+        }
+        root.addView(aiConnectionStatus)
 
         root.addView(TextView(this).apply {
             text = "چهار حالت داری: OCR سبک آفلاین، Bina آفلاین، Mistral OCR برای سند و جدول، و OpenAI آنلاین. برای فاکتورهای جدولی اول Mistral را امتحان کن."
@@ -341,6 +350,7 @@ class InvoiceActivity : AppCompatActivity() {
                         scanButton.isEnabled = true
                         scanButton.text = "🔎 آفلاین: خواندن عکس و استخراج اقلام"
 
+                        refreshAiConnectionStatus()
                         val analysis = analyze()
                         resultText.text = resultText.text.toString() +
                             "\n\nBina: " + result.lineCount + " خط، اطمینان تقریبی " + result.confidence + "%" +
@@ -372,7 +382,8 @@ class InvoiceActivity : AppCompatActivity() {
             .setNegativeButton("انصراف", null)
             .setPositiveButton("ذخیره") { _, _ ->
                 engine.saveKey(input.text.toString())
-                toast("کلید Mistral ذخیره شد.")
+                refreshAiConnectionStatus()
+                toast("کلید Mistral ذخیره شد؛ اتصال بعد از اولین درخواست موفق تأیید می‌شود.")
             }
             .show()
     }
@@ -422,9 +433,11 @@ class InvoiceActivity : AppCompatActivity() {
                     }
                 }
                 .onFailure { e ->
+                    engine.markVerified(false)
                     runOnUiThread {
                         scanButton.isEnabled = true
                         scanButton.text = "🔎 آفلاین: خواندن عکس و استخراج اقلام"
+                        refreshAiConnectionStatus()
                         toast("تحلیل Mistral انجام نشد: " + (e.message ?: "خطای ناشناخته"))
                     }
                 }
@@ -456,7 +469,8 @@ class InvoiceActivity : AppCompatActivity() {
             .setNegativeButton("انصراف", null)
             .setPositiveButton("ذخیره") { _, _ ->
                 engine.saveSettings(endpoint.text.toString(), token.text.toString())
-                toast("تنظیمات اتصال ذخیره شد.")
+                refreshAiConnectionStatus()
+                toast("تنظیمات اتصال ذخیره شد؛ اتصال بعد از اولین درخواست موفق تأیید می‌شود.")
             }
             .show()
     }
@@ -498,6 +512,7 @@ class InvoiceActivity : AppCompatActivity() {
 
                         scanButton.isEnabled = true
                         scanButton.text = "🔎 آفلاین: خواندن عکس و استخراج اقلام"
+                        refreshAiConnectionStatus()
 
                         val analysis = analyze()
                         val serverTotal = result.serverComputedTotal?.let { money(it) } ?: "—"
@@ -516,13 +531,34 @@ class InvoiceActivity : AppCompatActivity() {
                     }
                 }
                 .onFailure { e ->
+                    engine.markVerified(false)
                     runOnUiThread {
                         scanButton.isEnabled = true
                         scanButton.text = "🔎 آفلاین: خواندن عکس و استخراج اقلام"
+                        refreshAiConnectionStatus()
                         toast("تحلیل OpenAI انجام نشد: " + (e.message ?: "خطای ناشناخته"))
                     }
                 }
         }
+    }
+
+    private fun refreshAiConnectionStatus() {
+        val mistral = MistralDocumentAi(this)
+        val openAi = OpenAiProxyEngine(this)
+        val binaReady = OfflineBinaEngine(this).isReady()
+
+        val binaText = if (binaReady) "✓ Bina: آماده آفلاین" else "● Bina: آفلاین — اتصال API لازم ندارد"
+        aiConnectionStatus.text = listOf(
+            binaText,
+            connectionLabel("Mistral", mistral.configured(), mistral.verified()),
+            connectionLabel("OpenAI", openAi.configured(), openAi.verified())
+        ).joinToString("\n")
+    }
+
+    private fun connectionLabel(name: String, configured: Boolean, verified: Boolean): String = when {
+        verified -> "✓ $name: متصل"
+        configured -> "◷ $name: تنظیم شده، هنوز تست نشده"
+        else -> "✗ $name: وصل نیست"
     }
 
     private fun extractItemsFromText(showToast: Boolean) {
