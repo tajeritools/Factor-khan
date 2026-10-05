@@ -6,19 +6,16 @@ BASE="https://huggingface.co/Reza2kn/Bina-0.2-RizehPizeh/resolve/main"
 curl -L --fail --retry 3 -o "$TMP/inference/inference.json" "$BASE/inference/inference.json"
 python3 - <<'PY'
 import json
-p=".bina-model/inference/inference.json"
-obj=json.load(open(p))
-print("TOP_KEYS", list(obj.keys()))
-def walk(x,path="root"):
-    if isinstance(x,dict):
-        s=str(x)
-        if '"x"' in s and ("shape" in s.lower() or "feed" in s.lower()):
-            print("MATCH", path, s[:3000])
-        for k,v in x.items():
-            walk(v,path+"."+str(k))
-    elif isinstance(x,list):
-        for i,v in enumerate(x):
-            walk(v,path+f"[{i}]")
-walk(obj)
+obj=json.load(open(".bina-model/inference/inference.json"))
+s=json.dumps(obj, ensure_ascii=False)
+print("LEN", len(s))
+for pat in ['"shape"', '"dims"', '"x"', '"data"']:
+    print("PAT", pat)
+    start=0
+    for i in range(12):
+        p=s.find(pat,start)
+        if p<0: break
+        print(s[max(0,p-500):p+1200])
+        start=p+1
 PY
 exit 9
