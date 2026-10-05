@@ -43,7 +43,7 @@ fun Context.verticalRoot(): LinearLayout = LinearLayout(this).apply {
 }
 
 fun money(v: Long?): String =
-    if (v == null) "—" else NumberFormat.getNumberInstance(Locale("fa", "IR")).format(v)
+    if (v == null) "—" else String.format(Locale.US, "%,d", v).replace(",", ".")
 
 fun qtyText(v: Double): String =
     if (abs(v - v.toLong()) < 0.0001) v.toLong().toString() else String.format(Locale.US, "%.3f", v).trimEnd('0').trimEnd('.')
@@ -316,7 +316,7 @@ object InvoiceAnalyzer {
         "شماره فاکتور", "تلفن", "موبایل", "تاریخ", "کد ملی", "شناسه",
         "invoice no", "phone", "date", "s.no", "price", "unity price", "qty", "description"
     )
-    private val numberRegex = Regex("""[-+]?\d[\d,٬،]*(?:\.\d+)?""")
+    private val numberRegex = Regex("""[-+]?\d[\d,٬،.]*""")
 
     fun normalizeDigits(input: String): String {
         val fa = "۰۱۲۳۴۵۶۷۸۹"
@@ -338,10 +338,24 @@ object InvoiceAnalyzer {
     }
 
     fun parseNumber(text: String): Double? {
-        val normalized = normalizeDigits(text)
-            .replace(",", "")
+        var normalized = normalizeDigits(text)
             .replace(" ", "")
+            .replace(",", "")
             .trim()
+
+        if (normalized.isBlank()) return null
+
+        val dotCount = normalized.count { it == '.' }
+        normalized = when {
+            dotCount > 1 -> normalized.replace(".", "")
+            dotCount == 1 -> {
+                val before = normalized.substringBefore(".").replace("+", "").replace("-", "")
+                val after = normalized.substringAfter(".")
+                if (after.length == 3 && before.isNotBlank()) normalized.replace(".", "") else normalized
+            }
+            else -> normalized
+        }
+
         return normalized.toDoubleOrNull()
     }
 
@@ -534,6 +548,27 @@ class OcrEngine(private val context: Context) {
                 }
             } finally {
                 api.recycle()
+            }
+        }
+
+        // یک پاس جداگانه برای اعداد و قیمت‌ها؛ مخصوص فاکتورهای دست‌نویس/کم‌رنگ.
+        runCatching {
+            val numericApi = TessBaseAPI()
+            try {
+                if (numericApi.init(root.absolutePath, "fas+eng")) {
+                    numericApi.setPageSegMode(TessBaseAPI.PageSegMode.PSM_SPARSE_TEXT)
+                    numericApi.setVariable("tessedit_char_whitelist", "0123456789۰۱۲۳۴۵۶۷۸۹.,٬،")
+                    numericApi.setImage(bitmap)
+                    val numericText = numericApi.getUTF8Text().orEmpty()
+                    val mainDigits = bestText.count { it.isDigit() }
+                    val numericDigits = numericText.count { it.isDigit() }
+                    if (numericDigits >= 6 && numericDigits > mainDigits) {
+                        bestText = bestText.trim() + "\n" + numericText.trim()
+                        bestConfidence = max(bestConfidence, numericApi.meanConfidence())
+                    }
+                }
+            } finally {
+                numericApi.recycle()
             }
         }
 
