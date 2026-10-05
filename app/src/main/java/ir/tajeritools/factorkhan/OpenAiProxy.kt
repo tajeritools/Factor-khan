@@ -37,8 +37,15 @@ class OpenAiProxyEngine(private val context: Context) {
         prefs.edit()
             .putString("openai_proxy_endpoint", endpoint.trim())
             .putString("openai_proxy_token", token.trim())
+            .putBoolean("verified", false)
             .apply()
     }
+
+    fun configured(): Boolean =
+        getEndpoint().startsWith("https://") && getAccessToken().isNotBlank()
+
+    fun verified(): Boolean = configured() && prefs.getBoolean("verified", false)
+    fun markVerified(value: Boolean) = prefs.edit().putBoolean("verified", value).apply()
 
     fun analyzeInvoice(imageFile: File): AiInvoiceResult {
         val endpoint = getEndpoint()
@@ -70,6 +77,7 @@ class OpenAiProxyEngine(private val context: Context) {
         val responseText = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
 
         if (code !in 200..299) {
+            markVerified(false)
             val message = runCatching {
                 JSONObject(responseText).optString("message")
             }.getOrNull().orEmpty()
@@ -103,6 +111,7 @@ class OpenAiProxyEngine(private val context: Context) {
             }
         }
 
+        markVerified(true)
         return AiInvoiceResult(
             rawText = json.optString("transcription", ""),
             items = items,
