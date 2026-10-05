@@ -28,4 +28,5 @@ dependencies {
     implementation 'androidx.activity:activity-ktx:1.10.1'
     implementation 'androidx.exifinterface:exifinterface:1.4.1'
     implementation 'cz.adaptech.tesseract4android:tesseract4android:4.9.0'
+    implementation 'com.microsoft.onnxruntime:onnxruntime-android:1.21.1'
 }
