@@ -133,10 +133,25 @@ class InvoiceActivity : AppCompatActivity() {
         }
         root.addView(imageView)
 
-        scanButton = actionButton("🔎 خواندن عکس و استخراج اقلام").apply {
+        scanButton = actionButton("🔎 آفلاین: خواندن عکس و استخراج اقلام").apply {
             setOnClickListener { runOcr() }
         }
         root.addView(scanButton)
+
+        root.addView(actionButton("🧠 حرفه‌ای دست‌خط فارسی (AI آنلاین)").apply {
+            setOnClickListener { runAiHandwriting() }
+        })
+
+        root.addView(actionButton("🔑 تنظیم کلید Gemini API").apply {
+            setOnClickListener { showApiKeyDialog() }
+        })
+
+        root.addView(TextView(this).apply {
+            text = "حالت آفلاین بدون اینترنت کار می‌کند. حالت AI آنلاین برای دست‌خط فارسی دقیق‌تر است و نتیجه را دوباره با محاسبات فاکتور کنترل می‌کند."
+            gravity = Gravity.RIGHT
+            textSize = 14f
+            setPadding(0, dp(6), 0, dp(10))
+        })
 
         root.addView(titleText("متن OCR", 18f))
         ocrInput = EditText(this).apply {
@@ -263,7 +278,7 @@ class InvoiceActivity : AppCompatActivity() {
                     runOnUiThread {
                         ocrInput.setText(result.text)
                         scanButton.isEnabled = true
-                        scanButton.text = "🔎 خواندن عکس و استخراج اقلام"
+                        scanButton.text = "🔎 آفلاین: خواندن عکس و استخراج اقلام"
 
                         extractItemsFromText(showToast = false)
 
@@ -276,8 +291,80 @@ class InvoiceActivity : AppCompatActivity() {
                 .onFailure { e ->
                     runOnUiThread {
                         scanButton.isEnabled = true
-                        scanButton.text = "🔎 خواندن عکس و استخراج اقلام"
+                        scanButton.text = "🔎 آفلاین: خواندن عکس و استخراج اقلام"
                         toast("OCR انجام نشد: " + (e.message ?: "خطای ناشناخته"))
+                    }
+                }
+        }
+    }
+
+    private fun showApiKeyDialog() {
+        val engine = GeminiHandwritingEngine(this)
+        val input = EditText(this).apply {
+            hint = "Gemini API Key"
+            setText(engine.getApiKey())
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("کلید هوش مصنوعی")
+            .setMessage("برای حالت تخصصی دست‌خط فارسی، کلید Gemini API را وارد کن. کلید فقط روی همین گوشی ذخیره می‌شود.")
+            .setView(input)
+            .setNegativeButton("انصراف", null)
+            .setPositiveButton("ذخیره") { _, _ ->
+                engine.saveApiKey(input.text.toString())
+                toast("کلید ذخیره شد.")
+            }
+            .show()
+    }
+
+    private fun runAiHandwriting() {
+        val file = imageFile
+        if (file == null || !file.exists()) {
+            toast("اول از فاکتور عکس بگیر یا تصویر را آپلود کن.")
+            return
+        }
+
+        val engine = GeminiHandwritingEngine(this)
+        if (engine.getApiKey().isBlank()) {
+            showApiKeyDialog()
+            return
+        }
+
+        scanButton.isEnabled = false
+        resultText.text = "در حال تحلیل تخصصی دست‌خط فارسی..."
+
+        worker.execute {
+            runCatching { engine.analyzeInvoice(file) }
+                .onSuccess { result ->
+                    runOnUiThread {
+                        if (result.rawText.isNotBlank()) ocrInput.setText(result.rawText)
+
+                        rowViews.clear()
+                        itemContainer.removeAllViews()
+                        if (result.items.isNotEmpty()) {
+                            itemHint.text = result.items.size.toString() + " ردیف توسط AI تشخیص داده شد. لطفاً اعداد را کنترل کن."
+                            result.items.forEach { addItemRow(it) }
+                        } else {
+                            itemHint.text = "AI ردیف قابل اطمینانی پیدا نکرد؛ می‌توانی دستی اضافه کنی."
+                        }
+
+                        result.printedTotal?.let { manualTotalInput.setText(money(it)) }
+
+                        scanButton.isEnabled = true
+                        scanButton.text = "🔎 آفلاین: خواندن عکس و استخراج اقلام"
+
+                        val analysis = analyze()
+                        resultText.text = resultText.text.toString() +
+                            "\n\nAI: " + result.confidenceNote +
+                            "\nکنترل نهایی محاسبات: " + analysis.warning
+                    }
+                }
+                .onFailure { e ->
+                    runOnUiThread {
+                        scanButton.isEnabled = true
+                        scanButton.text = "🔎 آفلاین: خواندن عکس و استخراج اقلام"
+                        toast("تحلیل AI انجام نشد: " + (e.message ?: "خطای ناشناخته"))
                     }
                 }
         }
