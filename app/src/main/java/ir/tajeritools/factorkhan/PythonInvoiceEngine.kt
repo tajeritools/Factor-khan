@@ -28,7 +28,7 @@ data class PythonInvoiceResult(
 class PythonInvoiceEngine(private val context: Context) {
     private val prefs = context.getSharedPreferences("python_invoice_engine", Context.MODE_PRIVATE)
 
-    fun endpoint(): String = prefs.getString("endpoint", "").orEmpty().trim().trimEnd('/')
+    fun endpoint(): String = prefs.getString("endpoint", "https://factorkhan-api.up.railway.app").orEmpty().trim().trimEnd('/')
 
     fun saveEndpoint(value: String) {
         prefs.edit()
