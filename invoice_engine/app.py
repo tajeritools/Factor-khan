@@ -2,6 +2,7 @@ import base64
 import io
 import os
 import re
+import time
 from typing import Any, Optional
 
 import cv2
@@ -213,21 +214,64 @@ def gemini_extract(image: np.ndarray) -> dict[str, Any]:
         }
     }
 
-    try:
-        resp = requests.post(
-            GEMINI_URL.format(model=GEMINI_MODEL),
-            params={"key": GEMINI_API_KEY},
-            headers={"Content-Type": "application/json"},
-            json=body,
-            timeout=120,
+    models = []
+    for model in [
+        GEMINI_MODEL,
+        "gemini-3.7-flash",
+        "gemini-3.6-flash",
+        "gemini-3.5-flash",
+        "gemini-3.5-flash-lite",
+    ]:
+        if model and model not in models:
+            models.append(model)
+
+    last_error = ""
+    root = None
+    used_model = None
+
+    for model in models:
+        for attempt in range(3):
+            try:
+                resp = requests.post(
+                    GEMINI_URL.format(model=model),
+                    params={"key": GEMINI_API_KEY},
+                    headers={"Content-Type": "application/json"},
+                    json=body,
+                    timeout=120,
+                )
+            except requests.RequestException as exc:
+                last_error = f"{model}: {exc}"
+                if attempt < 2:
+                    time.sleep(2 ** attempt)
+                    continue
+                break
+
+            if resp.ok:
+                root = resp.json()
+                used_model = model
+                break
+
+            last_error = f"{model} HTTP {resp.status_code}: {resp.text[:300]}"
+
+            # 429/500/502/503/504 are normally transient/capacity errors.
+            if resp.status_code in (429, 500, 502, 503, 504) and attempt < 2:
+                time.sleep(2 ** attempt)
+                continue
+
+            # For unsupported/unavailable model IDs, immediately try the next fallback.
+            if resp.status_code in (400, 404, 429, 500, 502, 503, 504):
+                break
+
+            raise HTTPException(status_code=502, detail=f"Gemini {last_error}")
+
+        if root is not None:
+            break
+
+    if root is None:
+        raise HTTPException(
+            status_code=503,
+            detail=f"همه مدل‌های Gemini موقتاً در دسترس نبودند. آخرین خطا: {last_error}",
         )
-    except requests.RequestException as exc:
-        raise HTTPException(status_code=502, detail=f"خطای اتصال Gemini: {exc}") from exc
-
-    if not resp.ok:
-        raise HTTPException(status_code=502, detail=f"Gemini HTTP {resp.status_code}: {resp.text[:400]}")
-
-    root = resp.json()
     try:
         response_text = root["candidates"][0]["content"]["parts"][0]["text"]
     except Exception as exc:
@@ -238,7 +282,10 @@ def gemini_extract(image: np.ndarray) -> dict[str, Any]:
         ann = json.loads(response_text)
     except Exception as exc:
         raise HTTPException(status_code=502, detail="Gemini JSON معتبر برنگرداند.") from exc
-    return ann if isinstance(ann, dict) else {}
+    if isinstance(ann, dict):
+        ann["_model"] = used_model or GEMINI_MODEL
+        return ann
+    return {}
 
 def build_items(annotation: dict[str, Any]) -> list[InvoiceItem]:
     invoice_currency = normalize_currency(annotation.get("invoice_currency")) if annotation.get("invoice_currency") else ""
