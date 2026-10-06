@@ -13,9 +13,9 @@ from PIL import Image
 
 app = FastAPI(title="FactorKhan Invoice Engine", version="1.0.0")
 
-MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY", "").strip()
-MISTRAL_OCR_MODEL = os.getenv("MISTRAL_OCR_MODEL", "mistral-ocr-latest").strip()
-MISTRAL_URL = "https://api.mistral.ai/v1/ocr"
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash").strip()
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
 
 class InvoiceItem(BaseModel):
@@ -157,70 +157,92 @@ def table_crop(image: np.ndarray) -> np.ndarray:
     return image[y0:y1, x0:x1]
 
 
-def image_data_url(image: np.ndarray) -> str:
-    ok, buf = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 92])
+def image_base64(image: np.ndarray) -> str:
+    ok, buf = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 94])
     if not ok:
         raise HTTPException(status_code=500, detail="خطا در آماده‌سازی تصویر.")
-    return "data:image/jpeg;base64," + base64.b64encode(buf.tobytes()).decode("ascii")
+    return base64.b64encode(buf.tobytes()).decode("ascii")
 
 
-def mistral_extract(image: np.ndarray) -> dict[str, Any]:
-    if not MISTRAL_API_KEY:
-        raise HTTPException(status_code=503, detail="MISTRAL_API_KEY روی سرور تنظیم نشده است.")
+def gemini_extract(image: np.ndarray) -> dict[str, Any]:
+    if not GEMINI_API_KEY:
+        raise HTTPException(status_code=503, detail="GEMINI_API_KEY روی سرور تنظیم نشده است.")
 
     prompt = """
-فاکتور فارسی را ردیف به ردیف بخوان. فقط JSON معتبر برگردان.
+فاکتور فارسی دست‌نویس یا چاپی را ردیف‌به‌ردیف بخوان و فقط JSON معتبر برگردان.
+هدف فقط استخراج دقیق داده‌هاست؛ هیچ جمع یا ضربی انجام نده.
 جمع چاپ‌شده، مبلغ نهایی چاپ‌شده و مبلغ ردیف چاپ‌شده را برای محاسبه استفاده نکن.
-برای هر ردیف فقط این فیلدها را بده:
-items: [
- {description:string, quantity:number|null, unit:string|null,
-  unit_price:number|null, currency:"IRR"|"TOMAN"|null, confidence:number|null}
-]
-قواعد:
-- اعداد فارسی و عربی را به عدد لاتین تبدیل کن.
-- quantity باید فقط تعداد باشد؛ مانند "۱۰ شاخه" => quantity=10 و unit="شاخه".
-- unit_price فقط قیمت واحد همان ردیف است.
-- اگر واحد پول مشخص نبود IRR فرض نکن؛ currency را null بده.
-- عدد ناخوانا را null بگذار و حدس نزن.
-- ردیف خالی یا سربرگ جدول را آیتم حساب نکن.
-- هیچ ضرب یا جمعی انجام نده.
+
+ساختار خروجی:
+{
+  "invoice_currency": "IRR" | "TOMAN" | null,
+  "items": [
+    {
+      "description": string,
+      "quantity": number | null,
+      "unit": string | null,
+      "unit_price": number | null,
+      "currency": "IRR" | "TOMAN" | null,
+      "confidence": number | null
+    }
+  ]
+}
+
+قواعد سخت:
+- فقط ردیف‌های واقعی کالا/خدمت را استخراج کن؛ سربرگ و ردیف خالی را نیاور.
+- اعداد فارسی/عربی را به رقم لاتین تبدیل کن.
+- quantity فقط تعداد همان ردیف است. مثال: «۱۰ شاخه» => quantity=10 و unit="شاخه".
+- unit_price فقط قیمت واحد همان ردیف است، نه مبلغ کل ردیف.
+- اگر قیمت به تومان نوشته شده TOMAN و اگر ریال نوشته شده IRR بده.
+- اگر واحد پول در خود ردیف نیامده، از واحد پول کلی فاکتور استفاده کن.
+- اگر عدد ناخواناست null بده؛ حدس نزن.
+- توضیح کالا را تا حد ممکن همان متن واقعی فاکتور بنویس.
+- confidence بین 0 و 100 باشد.
 """.strip()
 
     body = {
-        "model": MISTRAL_OCR_MODEL,
-        "document": {"type": "image_url", "image_url": image_data_url(image)},
-        "include_blocks": True,
-        "document_annotation_format": {"type": "json_object"},
-        "document_annotation_prompt": prompt,
+        "contents": [{
+            "role": "user",
+            "parts": [
+                {"text": prompt},
+                {"inline_data": {"mime_type": "image/jpeg", "data": image_base64(image)}}
+            ]
+        }],
+        "generationConfig": {
+            "responseMimeType": "application/json",
+            "temperature": 0
+        }
     }
+
     try:
         resp = requests.post(
-            MISTRAL_URL,
-            headers={
-                "Authorization": f"Bearer {MISTRAL_API_KEY}",
-                "Content-Type": "application/json",
-            },
+            GEMINI_URL.format(model=GEMINI_MODEL),
+            params={"key": GEMINI_API_KEY},
+            headers={"Content-Type": "application/json"},
             json=body,
             timeout=120,
         )
     except requests.RequestException as exc:
-        raise HTTPException(status_code=502, detail=f"خطای اتصال Mistral: {exc}") from exc
+        raise HTTPException(status_code=502, detail=f"خطای اتصال Gemini: {exc}") from exc
 
     if not resp.ok:
-        raise HTTPException(status_code=502, detail=f"Mistral HTTP {resp.status_code}: {resp.text[:300]}")
+        raise HTTPException(status_code=502, detail=f"Gemini HTTP {resp.status_code}: {resp.text[:400]}")
 
     root = resp.json()
-    ann = root.get("document_annotation") or {}
-    if isinstance(ann, str):
-        import json
-        try:
-            ann = json.loads(ann)
-        except Exception:
-            ann = {}
+    try:
+        response_text = root["candidates"][0]["content"]["parts"][0]["text"]
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="پاسخ Gemini ساختار قابل خواندن نداشت.") from exc
+
+    import json
+    try:
+        ann = json.loads(response_text)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="Gemini JSON معتبر برنگرداند.") from exc
     return ann if isinstance(ann, dict) else {}
 
-
 def build_items(annotation: dict[str, Any]) -> list[InvoiceItem]:
+    invoice_currency = normalize_currency(annotation.get("invoice_currency")) if annotation.get("invoice_currency") else ""
     items: list[InvoiceItem] = []
     for raw in annotation.get("items") or []:
         if not isinstance(raw, dict):
@@ -234,7 +256,10 @@ def build_items(annotation: dict[str, Any]) -> list[InvoiceItem]:
         if confidence_raw is not None:
             confidence = int(round(confidence_raw * 100 if confidence_raw <= 1 else confidence_raw))
             confidence = max(0, min(100, confidence))
-        currency = normalize_currency(raw.get("currency"))
+        raw_currency = raw.get("currency")
+        currency = normalize_currency(raw_currency) if raw_currency else invoice_currency
+        if currency not in ("IRR", "TOMAN"):
+            continue
         row_total = int(round(qty * price))
         items.append(
             InvoiceItem(
@@ -273,7 +298,7 @@ def compute_result(items: list[InvoiceItem]) -> InvoiceResult:
         warning = f"{low_conf} ردیف اطمینان پایین دارد و بهتر است کنترل شود."
 
     return InvoiceResult(
-        engine="python-opencv-mistral",
+        engine="python-opencv-gemini",
         items=items,
         grand_total_irr=total_irr,
         grand_total_toman=total_irr // 10,
@@ -287,9 +312,10 @@ def compute_result(items: list[InvoiceItem]) -> InvoiceResult:
 def health() -> dict[str, Any]:
     return {
         "ok": True,
-        "engine": "python-opencv-mistral",
-        "mistral_configured": bool(MISTRAL_API_KEY),
-        "model": MISTRAL_OCR_MODEL,
+        "engine": "python-opencv-gemini",
+        "gemini_configured": bool(GEMINI_API_KEY),
+        "mistral_configured": bool(GEMINI_API_KEY),
+        "model": GEMINI_MODEL,
     }
 
 
@@ -301,12 +327,12 @@ async def analyze(file: UploadFile = File(...)) -> InvoiceResult:
 
     original = decode_image(data)
     enhanced = enhance(original)
-    first = build_items(mistral_extract(table_crop(enhanced)))
+    first = build_items(gemini_extract(table_crop(enhanced)))
 
     # اگر استخراج اولیه ضعیف بود، یک پاس دوم روی کل تصویر اصلاح‌شده انجام می‌شود.
     avg_conf = (sum(i.confidence for i in first) / len(first)) if first else 0
     if len(first) < 1 or avg_conf < 55:
-        second = build_items(mistral_extract(enhanced))
+        second = build_items(gemini_extract(enhanced))
         items = second if score(second) > score(first) else first
     else:
         items = first
