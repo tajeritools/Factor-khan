@@ -53,7 +53,7 @@ class PythonInvoiceEngine(private val context: Context) {
             val text = (if (code in 200..299) conn.inputStream else conn.errorStream)
                 ?.bufferedReader()?.use { it.readText() }.orEmpty()
             val ok = code in 200..299 &&
-                runCatching { JSONObject(text).optBoolean("ok", false) && JSONObject(text).optBoolean("mistral_configured", false) }
+                runCatching { JSONObject(text).optBoolean("ok", false) && (JSONObject(text).optBoolean("gemini_configured", false) || JSONObject(text).optBoolean("mistral_configured", false)) }
                     .getOrDefault(false)
             markVerified(ok)
             ok
