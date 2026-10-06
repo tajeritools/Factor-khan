@@ -209,8 +209,7 @@ def gemini_extract(image: np.ndarray) -> dict[str, Any]:
             ]
         }],
         "generationConfig": {
-            "responseMimeType": "application/json",
-            "temperature": 0
+            "responseMimeType": "application/json"
         }
     }
 
@@ -259,7 +258,7 @@ def build_items(annotation: dict[str, Any]) -> list[InvoiceItem]:
         raw_currency = raw.get("currency")
         currency = normalize_currency(raw_currency) if raw_currency else invoice_currency
         if currency not in ("IRR", "TOMAN"):
-            continue
+            currency = "IRR"
         row_total = int(round(qty * price))
         items.append(
             InvoiceItem(
@@ -327,12 +326,13 @@ async def analyze(file: UploadFile = File(...)) -> InvoiceResult:
 
     original = decode_image(data)
     enhanced = enhance(original)
-    first = build_items(gemini_extract(table_crop(enhanced)))
+    # پاس اول روی کل تصویر اصلاح‌شده انجام می‌شود تا ردیف‌های واقعی حذف نشوند.
+    first = build_items(gemini_extract(enhanced))
 
-    # اگر استخراج اولیه ضعیف بود، یک پاس دوم روی کل تصویر اصلاح‌شده انجام می‌شود.
+    # اگر نتیجه ضعیف بود، پاس دوم روی ناحیه جدول انجام می‌شود.
     avg_conf = (sum(i.confidence for i in first) / len(first)) if first else 0
-    if len(first) < 1 or avg_conf < 55:
-        second = build_items(gemini_extract(enhanced))
+    if len(first) < 2 or avg_conf < 55:
+        second = build_items(gemini_extract(table_crop(enhanced)))
         items = second if score(second) > score(first) else first
     else:
         items = first
