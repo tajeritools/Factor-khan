@@ -144,6 +144,14 @@ class InvoiceActivity : AppCompatActivity() {
             setOnClickListener { runOfflineBina() }
         })
 
+        root.addView(actionButton("☁️ Gemini AI فاکتور فارسی").apply {
+            setOnClickListener { runGeminiInvoice() }
+        })
+
+        root.addView(actionButton("⚙️ تنظیم Gemini").apply {
+            setOnClickListener { showGeminiSettingsDialog() }
+        })
+
         root.addView(actionButton("🧠 Mistral OCR / Document AI").apply {
             setOnClickListener { runMistralInvoice() }
         })
@@ -168,7 +176,7 @@ class InvoiceActivity : AppCompatActivity() {
         root.addView(aiConnectionStatus)
 
         root.addView(TextView(this).apply {
-            text = "چهار حالت داری: OCR سبک آفلاین، Bina آفلاین، Mistral OCR برای سند و جدول، و OpenAI آنلاین. برای فاکتورهای جدولی اول Mistral را امتحان کن."
+            text = "پنج حالت داری: OCR سبک آفلاین، Bina آفلاین، Gemini آنلاین از سرور امن، Mistral OCR و OpenAI آنلاین. برای فاکتورهای فارسی و دست‌نویس اول Gemini را امتحان کن."
             gravity = Gravity.RIGHT
             textSize = 14f
             setPadding(0, dp(6), 0, dp(10))
@@ -367,6 +375,97 @@ class InvoiceActivity : AppCompatActivity() {
         }
     }
 
+
+    private fun showGeminiSettingsDialog() {
+        val engine = PythonInvoiceEngine(this)
+        val input = EditText(this).apply {
+            hint = "آدرس سرور Gemini"
+            setText(engine.endpoint())
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("تنظیم Gemini")
+            .setMessage("کلید Gemini روی سرور امن Railway است و داخل برنامه ذخیره نمی‌شود. اینجا فقط آدرس سرویس را تنظیم کن.")
+            .setView(input)
+            .setNegativeButton("انصراف", null)
+            .setPositiveButton("ذخیره و تست") { _, _ ->
+                engine.saveEndpoint(input.text.toString())
+                refreshAiConnectionStatus()
+                worker.execute {
+                    val ok = runCatching { engine.testConnection() }.getOrDefault(false)
+                    runOnUiThread {
+                        refreshAiConnectionStatus()
+                        toast(if (ok) "Gemini متصل شد." else "اتصال Gemini تأیید نشد.")
+                    }
+                }
+            }
+            .show()
+    }
+
+    private fun runGeminiInvoice() {
+        val file = imageFile
+        if (file == null || !file.exists()) {
+            toast("اول از فاکتور عکس بگیر یا تصویر را آپلود کن.")
+            return
+        }
+
+        val engine = PythonInvoiceEngine(this)
+        if (!engine.configured()) {
+            showGeminiSettingsDialog()
+            return
+        }
+
+        scanButton.isEnabled = false
+        resultText.text = "در حال تحلیل فاکتور با Gemini + Python/OpenCV..."
+
+        worker.execute {
+            runCatching { engine.analyze(file) }
+                .onSuccess { result ->
+                    runOnUiThread {
+                        rowViews.clear()
+                        itemContainer.removeAllViews()
+
+                        if (result.items.isNotEmpty()) {
+                            itemHint.text = result.items.size.toString() + " ردیف توسط Gemini پیدا شد. اعداد را کنترل کن."
+                            result.items.forEach { item ->
+                                addItemRow(
+                                    InvoiceItem(
+                                        description = item.description,
+                                        quantity = item.quantity,
+                                        unitPrice = item.unitPrice,
+                                        printedRowTotal = null,
+                                        confidence = item.confidence
+                                    )
+                                )
+                            }
+                        } else {
+                            itemHint.text = "Gemini ردیف کامل قابل محاسبه پیدا نکرد."
+                        }
+
+                        scanButton.isEnabled = true
+                        scanButton.text = "🔎 آفلاین: خواندن عکس و استخراج اقلام"
+                        refreshAiConnectionStatus()
+
+                        val analysis = analyze()
+                        resultText.text = resultText.text.toString() +
+                            "\n\nGemini / Python: جمع سرور = " + result.formattedTotalIrr + " ریال" +
+                            "\nمعادل تومان = " + result.formattedTotalToman +
+                            (if (result.warning.isNotBlank()) "\n" + result.warning else "") +
+                            "\nکنترل نهایی برنامه: " + analysis.warning
+                    }
+                }
+                .onFailure { e ->
+                    runOnUiThread {
+                        scanButton.isEnabled = true
+                        scanButton.text = "🔎 آفلاین: خواندن عکس و استخراج اقلام"
+                        refreshAiConnectionStatus()
+                        toast("تحلیل Gemini انجام نشد: " + (e.message ?: "خطای ناشناخته"))
+                    }
+                }
+        }
+    }
+
     private fun showMistralSettingsDialog() {
         val engine = MistralDocumentAi(this)
         val input = EditText(this).apply {
@@ -543,6 +642,7 @@ class InvoiceActivity : AppCompatActivity() {
     }
 
     private fun refreshAiConnectionStatus() {
+        val gemini = PythonInvoiceEngine(this)
         val mistral = MistralDocumentAi(this)
         val openAi = OpenAiProxyEngine(this)
         val binaReady = OfflineBinaEngine(this).isReady()
@@ -550,6 +650,7 @@ class InvoiceActivity : AppCompatActivity() {
         val binaText = if (binaReady) "✓ Bina: آماده آفلاین" else "● Bina: آفلاین — اتصال API لازم ندارد"
         aiConnectionStatus.text = listOf(
             binaText,
+            connectionLabel("Gemini", gemini.configured(), gemini.verified()),
             connectionLabel("Mistral", mistral.configured(), mistral.verified()),
             connectionLabel("OpenAI", openAi.configured(), openAi.verified())
         ).joinToString("\n")
